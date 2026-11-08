@@ -1,0 +1,13 @@
+/target/
+.venv/
+__pycache__/
+.ruff_cache/
+.DS_Store
+.env
+.env.*
+/data/
+/results/
+/live/
+/secrets/
+.audit/
+.archify/
