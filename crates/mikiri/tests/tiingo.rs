@@ -172,11 +172,14 @@ fn saves_exact_bytes_and_reports_hash_without_prices() {
     let bytes = HAND_WRITTEN_BAR;
     let summary = save_daily_bars(bytes, &out).unwrap();
     assert_eq!(fs::read(&out).unwrap(), bytes);
-    assert!(summary.contains("bars=2 first=2020-01-02 last=2020-01-03 sha256="));
-    let hash = summary.split("sha256=").nth(1).unwrap();
-    assert_eq!(hash, format!("{:x}", Sha256::digest(bytes)));
-    assert!(!summary.contains("412.34"));
-    assert!(!summary.contains("413"));
+    assert_eq!(
+        summary,
+        format!(
+            "wrote {} bars=2 first=2020-01-02 last=2020-01-03 sha256={:x}",
+            out.display(),
+            Sha256::digest(bytes)
+        )
+    );
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
     fs::remove_dir_all(dir).unwrap();
 }
