@@ -87,13 +87,50 @@ pub fn parse_daily_bars(raw: &[u8]) -> Result<Vec<DailyBar>, ParseError> {
 }
 
 #[derive(Debug)]
-pub struct FetchError(&'static str);
+pub enum FetchError {
+    Message(&'static str),
+    InvalidResponse(ParseError),
+}
 impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
+        match self {
+            FetchError::Message(msg) => f.write_str(msg),
+            FetchError::InvalidResponse(err) => {
+                write!(f, "invalid daily bars response: {err}")
+            }
+        }
     }
 }
 impl std::error::Error for FetchError {}
+
+pub fn checked_output_path(path: &Path) -> Result<&Path, FetchError> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(FetchError::Message("output path must be under data/"));
+    }
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => {}
+            _ => return Err(FetchError::Message("output path must be under data/")),
+        }
+    }
+    let segments: Vec<_> = path
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    if !segments
+        .first()
+        .is_some_and(|s| *s == std::ffi::OsStr::new("data"))
+    {
+        return Err(FetchError::Message("output path must be under data/"));
+    }
+    if segments.len() < 2 {
+        return Err(FetchError::Message("output path must be under data/"));
+    }
+    Ok(path)
+}
 
 pub fn fetch_daily_bars(
     base_url: &str,
@@ -107,12 +144,13 @@ pub fn fetch_daily_bars(
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
     {
-        return Err(FetchError("invalid ticker"));
+        return Err(FetchError::Message("invalid ticker"));
     }
-    let token = fs::read_to_string(token_file).map_err(|_| FetchError("cannot read token file"))?;
+    let token = fs::read_to_string(token_file)
+        .map_err(|_| FetchError::Message("cannot read token file"))?;
     let token = token.trim();
     if token.is_empty() || token.chars().any(char::is_control) {
-        return Err(FetchError("invalid token"));
+        return Err(FetchError::Message("invalid token"));
     }
     let url = format!(
         "{}/tiingo/daily/{ticker}/prices?startDate={start}&format=json",
@@ -138,35 +176,36 @@ pub fn fetch_daily_bars(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| FetchError("cannot start curl"))?;
+        .map_err(|_| FetchError::Message("cannot start curl"))?;
     let sent = match child.stdin.take() {
         Some(mut stdin) => writeln!(stdin, "Authorization: Token {token}"),
         None => Err(std::io::Error::other("missing curl stdin")),
     };
     let output = child
         .wait_with_output()
-        .map_err(|_| FetchError("cannot wait for curl"))?;
+        .map_err(|_| FetchError::Message("cannot wait for curl"))?;
     if sent.is_err() || !output.status.success() {
-        return Err(FetchError("curl request failed"));
+        return Err(FetchError::Message("curl request failed"));
     }
     save_daily_bars(&output.stdout, out)
 }
 
 pub fn save_daily_bars(raw: &[u8], out: &Path) -> Result<String, FetchError> {
-    let bars = parse_daily_bars(raw).map_err(|_| FetchError("invalid daily bars response"))?;
-    let first = bars.first().ok_or(FetchError("empty response"))?;
-    let last = bars.last().ok_or(FetchError("empty response"))?;
+    let bars = parse_daily_bars(raw).map_err(FetchError::InvalidResponse)?;
+    let first = bars.first().ok_or(FetchError::Message("empty response"))?;
+    let last = bars.last().ok_or(FetchError::Message("empty response"))?;
     let parent = out
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).map_err(|_| FetchError("cannot create output directory"))?;
+    fs::create_dir_all(parent)
+        .map_err(|_| FetchError::Message("cannot create output directory"))?;
     let temporary = parent.join(format!(".fetch-tiingo-{}.tmp", std::process::id()));
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .map_err(|_| FetchError("cannot create temporary output"))?;
+        .map_err(|_| FetchError::Message("cannot create temporary output"))?;
     let result = (|| {
         file.write_all(raw)?;
         file.sync_all()?;
@@ -174,7 +213,7 @@ pub fn save_daily_bars(raw: &[u8], out: &Path) -> Result<String, FetchError> {
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
-        return Err(FetchError("cannot publish output"));
+        return Err(FetchError::Message("cannot publish output"));
     }
     Ok(format!(
         "wrote {} bars={} first={} last={} sha256={:x}",
@@ -184,4 +223,32 @@ pub fn save_daily_bars(raw: &[u8], out: &Path) -> Result<String, FetchError> {
         last.date,
         Sha256::digest(raw)
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_output_path;
+    use std::path::Path;
+
+    #[test]
+    fn checked_output_path_accepts_data_subpath() {
+        assert!(checked_output_path(Path::new("data/raw/tiingo/SPY.json")).is_ok());
+    }
+
+    #[test]
+    fn checked_output_path_rejects_outside_data() {
+        for path in [
+            Path::new("/tmp/x.json"),
+            Path::new("raw/SPY.json"),
+            Path::new("data/../secret.json"),
+            Path::new("../data/x.json"),
+            Path::new("data"),
+        ] {
+            assert!(
+                checked_output_path(path).is_err(),
+                "expected rejection for {}",
+                path.display()
+            );
+        }
+    }
 }

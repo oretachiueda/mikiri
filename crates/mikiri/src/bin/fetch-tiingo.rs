@@ -1,4 +1,4 @@
-use mikiri::tiingo::fetch_daily_bars;
+use mikiri::tiingo::{checked_output_path, fetch_daily_bars};
 use std::path::PathBuf;
 use time::Date;
 
@@ -27,6 +27,7 @@ fn run() -> Result<String, String> {
         .map_err(|_| "invalid date format")?;
     let start = Date::parse(&start, &format).map_err(|_| "start must be YYYY-MM-DD")?;
     let out = PathBuf::from(out.ok_or("missing --out")?);
+    checked_output_path(&out).map_err(|e| e.to_string())?;
     let token_file = match token_file {
         Some(path) => PathBuf::from(path),
         None => PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?)
