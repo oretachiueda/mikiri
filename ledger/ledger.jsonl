@@ -1,1 +1,1 @@
-{"seq":1,"ts":"2026-11-09T02:30:29Z","kind":"prereg","hypothesis":"H001","doc":"prereg/H001-turn-of-month.md","doc_sha256":"44c47e475ae3b5e57aeee253ed9e29d3051f4fdbff97e3c47ab1ce2497106ff0","configs":1,"dev":{"start":"2006-01-01","end":"2026-10-30"},"holdout":null}
+{"seq":1,"ts":"2026-11-09T03:02:38Z","kind":"prereg","hypothesis":"H001","doc":"prereg/H001-turn-of-month.md","doc_sha256":"39e3092104352e2bc6321993bfad47be74cf2f2d6aa8ff5cb73c53f61e04c347","configs":1,"dev":{"start":"2006-01-01","end":"2026-10-30"},"holdout":null}
