@@ -41,6 +41,7 @@ jobs:
       - run: uv run --locked ruff check
       - run: uv run --locked ruff format --check
       - run: uv run --locked ty check
+      - run: uv run --locked pytest
 
   hooks:
     runs-on: ubuntu-24.04-arm
