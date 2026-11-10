@@ -132,8 +132,9 @@ pub fn cycles(bars: &[DailyBar], cost: f64) -> Result<Vec<Cycle>> {
         {
             continue;
         }
-        let in_mean = mean(&returns[start - 1..start + 3])? - cost / 4.0;
+        let in_mean = mean(&returns[start - 1..start + 3])?;
         let out_mean = mean(&returns[start + 3..next - 1])?;
+        let d = in_mean - cost / 4.0 - out_mean;
         result.push(Cycle {
             plus1,
             period: if plus1 >= main_start {
@@ -146,7 +147,7 @@ pub fn cycles(bars: &[DailyBar], cost: f64) -> Result<Vec<Cycle>> {
             out_days: next - start - 4,
             in_mean,
             out_mean,
-            d: in_mean - out_mean,
+            d,
         });
     }
     Ok(result)
@@ -217,7 +218,7 @@ pub fn compute(bars: &[DailyBar]) -> Result<(Vec<Cycle>, Summary)> {
         mean_d_main_cost2x: mean(
             &main
                 .iter()
-                .map(|c| (c.in_mean - ROUND_TRIP_COST / 4.0) - c.out_mean)
+                .map(|c| c.in_mean - 2.0 * (ROUND_TRIP_COST / 4.0) - c.out_mean)
                 .collect::<Vec<_>>(),
         )?,
         mean_d_reference: if reference.is_empty() {
@@ -302,22 +303,61 @@ pub fn checked_output_path(path: &Path) -> Result<&Path> {
     }
     Ok(path)
 }
-pub fn write_outputs(
+#[cfg(test)]
+pub(crate) static TEST_WRITE_FAIL_AFTER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
+struct OutputScratch {
+    path: std::path::PathBuf,
+    complete: bool,
+}
+impl Drop for OutputScratch {
+    fn drop(&mut self) {
+        if !self.complete {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+#[cfg(test)]
+static WRITE_OUTPUT_STEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn write_outputs_fail_after_limit() -> usize {
+    #[cfg(test)]
+    {
+        TEST_WRITE_FAIL_AFTER.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(test))]
+    {
+        usize::MAX
+    }
+}
+
+#[cfg(test)]
+fn write_outputs_after_step(limit: usize) -> Result<()> {
+    let done = WRITE_OUTPUT_STEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if done > limit {
+        return Err("test-induced write failure".into());
+    }
+    Ok(())
+}
+#[cfg(not(test))]
+fn write_outputs_after_step(_limit: usize) -> Result<()> {
+    Ok(())
+}
+
+fn write_output_files(
     bars: &[DailyBar],
     cycles: &[Cycle],
     summary: &Summary,
-    out: &Path,
-) -> Result<String> {
-    checked_output_path(out)?;
-    // A fresh directory prevents mixing outputs from separate computations.
-    if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::create_dir(out)?;
+    dir: &Path,
+) -> Result<()> {
+    #[cfg(test)]
+    WRITE_OUTPUT_STEPS.store(0, std::sync::atomic::Ordering::Relaxed);
     let paths = [
-        out.join("bars.parquet"),
-        out.join("cycles.parquet"),
-        out.join("summary.json"),
+        dir.join("bars.parquet"),
+        dir.join("cycles.parquet"),
+        dir.join("summary.json"),
     ];
     write_batch(
         &paths[0],
@@ -328,8 +368,62 @@ pub fn write_outputs(
             ("split_factor", floats(bars.iter().map(|b| b.split_factor))),
         ],
     )?;
+    write_outputs_after_step(write_outputs_fail_after_limit())?;
     write_cycles(cycles, &paths[1])?;
+    write_outputs_after_step(write_outputs_fail_after_limit())?;
     fs::write(&paths[2], serde_json::to_vec_pretty(summary)?)?;
+    write_outputs_after_step(write_outputs_fail_after_limit())?;
+    Ok(())
+}
+
+fn output_temp_dir(out: &Path) -> std::path::PathBuf {
+    let name = out
+        .file_name()
+        .map_or_else(|| "out".into(), |n| n.to_os_string());
+    let parent = out.parent().map_or_else(
+        || Path::new(".").to_path_buf(),
+        std::path::Path::to_path_buf,
+    );
+    parent.join(format!(
+        ".{}.tmp-{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ))
+}
+
+pub fn write_outputs(
+    bars: &[DailyBar],
+    cycles: &[Cycle],
+    summary: &Summary,
+    out: &Path,
+) -> Result<String> {
+    checked_output_path(out)?;
+    if out.exists() {
+        return Err("output directory already exists".into());
+    }
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = output_temp_dir(out);
+    if tmp.exists() {
+        return Err("output directory already exists".into());
+    }
+    fs::create_dir(&tmp)?;
+    let scratch = OutputScratch {
+        path: tmp.clone(),
+        complete: false,
+    };
+    let write_result = write_output_files(bars, cycles, summary, &tmp);
+    if write_result.is_err() {
+        return write_result.map(|_| String::new());
+    }
+    fs::rename(&tmp, out)?;
+    std::mem::forget(scratch);
+    let paths = [
+        out.join("bars.parquet"),
+        out.join("cycles.parquet"),
+        out.join("summary.json"),
+    ];
     let mut report = Vec::new();
     for path in &paths {
         report.push(format!(

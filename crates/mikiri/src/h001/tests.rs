@@ -53,8 +53,7 @@ fn october_calendar_matches_hand_calculation() {
         .iter()
         .map(|d| f64::from(d.ordinal()) / 10_000.0)
         .sum::<f64>()
-        / 4.0
-        - ROUND_TRIP_COST / 4.0;
+        / 4.0;
     let outside: Vec<_> = bars
         .iter()
         .filter(|b| {
@@ -65,7 +64,7 @@ fn october_calendar_matches_hand_calculation() {
     let expected_out = outside.iter().map(|b| b.div_cash / b.close).sum::<f64>() / 18.0;
     assert!((october.in_mean - expected_in).abs() < 1e-15);
     assert!((october.out_mean - expected_out).abs() < 1e-15);
-    assert!((october.d - (expected_in - expected_out)).abs() < 1e-15);
+    assert!((october.d - (expected_in - ROUND_TRIP_COST / 4.0 - expected_out)).abs() < 1e-15);
     assert!(computed.iter().all(|c| c.plus1 != date(2026, 11, 2)));
 }
 
@@ -214,6 +213,47 @@ fn cycles_parquet_roundtrip_preserves_rows_and_d() {
         computed.iter().map(|c| c.d.to_bits()).collect::<Vec<_>>()
     );
     std::fs::remove_file(path).expect("cleanup parquet");
+}
+
+#[test]
+fn in_mean_is_pre_cost_and_d_unchanged_across_costs() {
+    let bars = calendar_bars();
+    let free = cycles(&bars, 0.0).expect("zero cost");
+    let base = cycles(&bars, ROUND_TRIP_COST).expect("base cost");
+    assert_eq!(free.len(), base.len());
+    for (zero, one) in free.iter().zip(&base) {
+        assert_eq!(zero.plus1, one.plus1);
+        assert_eq!(zero.in_mean.to_bits(), one.in_mean.to_bits());
+        assert!((one.d - (zero.d - ROUND_TRIP_COST / 4.0)).abs() < 1e-15);
+    }
+}
+
+#[test]
+fn write_outputs_failure_removes_temp_and_leaves_no_out_dir() {
+    use std::{path::PathBuf, sync::atomic::Ordering};
+    struct ChdirBack(std::path::PathBuf);
+    impl Drop for ChdirBack {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+    let root = std::env::temp_dir().join(format!("mikiri-h001-write-fail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("workspace");
+    let out = PathBuf::from("results/atomic-fail");
+    let cwd = std::env::current_dir().expect("cwd");
+    std::env::set_current_dir(&root).expect("chdir");
+    let _chdir = ChdirBack(cwd);
+    let bars = synthetic_bars(date(2005, 11, 1), date(2026, 11, 3));
+    let (cycles, summary) = compute(&bars).expect("compute");
+    TEST_WRITE_FAIL_AFTER.store(1, Ordering::Relaxed);
+    let err = super::write_outputs(&bars, &cycles, &summary, &out).expect_err("write");
+    TEST_WRITE_FAIL_AFTER.store(usize::MAX, Ordering::Relaxed);
+    assert_eq!(err.to_string(), "test-induced write failure");
+    assert!(!root.join(&out).exists());
+    let tmp = root.join(format!(".atomic-fail.tmp-{}", std::process::id()));
+    assert!(!tmp.exists());
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
