@@ -31,4 +31,6 @@
 | `holdout_open` | `stage` is always `holdout`; `reason` |
 | `correction` | `corrects_seq` (integer), `reason`, `fields` (object of corrected values) |
 
+`results_sha256` is the SHA-256 of the run directory's `SHA256SUMS` file, made with `shasum -a 256 <files>` inside that directory, one line per result file in name order.
+
 Dates inside `dev` and `holdout` are `YYYY-MM-DD`. `holdout` is `null` when the preregistration puts the recent period into the main test and says why. A `prereg` line is written in the same commit as its document, so `doc_sha256` hashes the merged file bytes.
