@@ -75,6 +75,7 @@ pre-commit run --all-files
 
 - 체크아웃마다 처음 한 번 `pre-commit install`을 실행한다. 커밋할 때 gitleaks, typos, actionlint, zizmor, ruff, cargo fmt가 돈다.
 - CI(`.github/workflows/ci.yml`, ubuntu-24.04-arm)는 같은 검사에 gitleaks 전체 이력 검사를 더한다. Actions는 커밋 SHA로 고정하고 Dependabot이 올린다.
+- 실제 동작은 `verify-mikiri` 스킬(`.agents/skills/verify-mikiri`, Claude는 `.claude/skills/`의 링크)로 확인한다. verify 스킬을 새로 만들지 않고, 사용자가 쓰는 기능이 바뀌면 그 스킬의 기능 맵을 같은 PR에서 고친다.
 - 도입 시점이 정해진 도구:
   - proptest: 비용·주문·사이징 코드가 처음 생길 때 같이 넣는다.
   - cargo-mutants: 같은 코드에 주 1회 돌린다.
