@@ -23,7 +23,7 @@ Preconditions:
 - **Arguments.** Run `target/debug/fetch-tiingo`, then `target/debug/fetch-tiingo --ticker SPY --start 2020-01-01`, then `target/debug/fetch-tiingo --ticker SPY --start 20200101 --out data/raw/tiingo/VERIFY.json`. Stderr is `missing --ticker`, `missing --out`, and `start must be YYYY-MM-DD`. Each exit code is `1`.
 - **Output guard.** Run `target/debug/fetch-tiingo --ticker SPY --start 2020-01-01 --out /tmp/x.json --token-file /tmp/mikiri-no-token`. Stderr is `output path must be under data/` and the exit code is `1`.
 - **Token.** Run `target/debug/fetch-tiingo --ticker SPY --start 2020-01-01 --out data/raw/tiingo/VERIFY.json --token-file /tmp/mikiri-no-token`. Stderr is `cannot read token file`, the exit code is `1`, and `data/raw/tiingo/VERIFY.json` does not exist.
-- **Download.** This skill does not verify it. `cargo nextest run --locked --test tiingo` tests the `fetch_daily_bars` library function for parsing, validation, the saved bytes, and that a connection error does not expose the token. Those tests are not proof of the binary. Report a download as unverified unless a human asked for a real run.
+- **Download.** This skill does not verify it. `cargo nextest run --locked --test tiingo` tests library functions: `parse_daily_bars` for parsing, `save_daily_bars` for validation and the saved bytes, and `fetch_daily_bars` for a connection error that does not expose the token. Those tests are not proof of the binary. Report a download as unverified unless a human asked for a real run.
 
 ## Gotchas
 
