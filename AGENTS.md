@@ -82,7 +82,7 @@ pre-commit run --all-files
   - 보안 감사(Cloudflare security-audit-skill): 실거래 단계 전에 한 번 한다.
 - 의존성은 꼭 필요할 때만 추가한다. cargo-deny가 라이선스·보안 권고·출처를 검사한다.
 - Rust 코드의 정의·참조·호출부는 rust-analyzer로 찾는다. Claude는 프로젝트 플러그인(`.claude/settings.json`)으로, 다른 에이전트는 `rust-analyzer` CLI와 `cargo check`로 쓴다. 이름 grep만으로 호출부를 다 찾았다고 판단하지 않는다.
-- Nautilus 개념과 사용 예는 context7 MCP(`.mcp.json`, `.codex/config.toml`, `.cursor/mcp.json`, `opencode.json`)로 찾는다. context7 결과는 Python API 위주라서, Rust API는 고정한 버전의 docs.rs나 `cargo doc`으로 확인한다. 기억으로 API를 추측하지 않는다.
+- Nautilus 개념과 사용 예는 context7 MCP로 찾는다. context7은 저장소가 아니라 각 에이전트의 전역 설정에 둔다(`https://mcp.context7.com/mcp`). context7 결과는 Python API 위주라서, Rust API는 고정한 버전의 docs.rs나 `cargo doc`으로 확인한다. 기억으로 API를 추측하지 않는다.
 
 ## 8. 작업 방식
 
