@@ -251,8 +251,7 @@ fn write_outputs_failure_removes_temp_and_leaves_no_out_dir() {
     TEST_WRITE_FAIL_AFTER.store(usize::MAX, Ordering::Relaxed);
     assert_eq!(err.to_string(), "test-induced write failure");
     assert!(!root.join(&out).exists());
-    let tmp = root.join(format!(".atomic-fail.tmp-{}", std::process::id()));
-    assert!(!tmp.exists());
+    assert!(!root.join(super::output_temp_dir(&out)).exists());
     let _ = std::fs::remove_dir_all(&root);
 }
 
