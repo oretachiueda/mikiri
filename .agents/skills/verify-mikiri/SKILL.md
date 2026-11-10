@@ -1,6 +1,6 @@
 ---
 name: verify-mikiri
-description: Drive Mikiri's command-line tools (h001-compute, stats/h001.py, fetch-tiingo) on synthetic bars and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data, token, or network.
+description: Drive Mikiri's command-line tools (h001-compute, stats/h001.py, fetch-tiingo) on synthetic bars and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
 ---
 
 # Verify Mikiri
@@ -43,7 +43,7 @@ Error paths and the other entry points are in `features/`. Each recipe there is 
 
 `drive.sh` writes to `/tmp/mikiri-verify-<id>/`.
 
-- `transcript.txt` holds each command, its output, and its exit code.
+- `transcript.txt` holds the build, `h001-compute`, and `stats/h001.py` steps, each with its output and exit code. A failed final count or match check prints to stderr instead.
 - `bars.json` is the synthetic input.
 - `summary.json` and `verdict.json` are copies of the Rust summary and the Python comparison.
 - `SHA256SUMS` holds the hashes of the four result files.
@@ -57,9 +57,10 @@ Proof standards:
 
 ## Cleanup
 
-`drive.sh` deletes its own run directory, `results/verify-<id>`, when it exits. The evidence directory stays. The failure recipes in `features/` write no result files. Never delete another directory under `results/` or `data/`.
+`drive.sh` deletes its own run directory, `results/verify-<id>`, when it exits. If that directory already exists, the script stops before it writes anything. The evidence directory stays. The shell failure recipes in `features/` write no result files. The pytest mismatch recipe makes a `results/h001-test-*` directory and deletes it when it ends. Never delete another directory under `results/` or `data/`.
 
 ## Limits
 
 - Never read `data/`, `live/`, `secrets/`, `.env`, or a token file during verification.
+- The first `cargo build` and `uv run` can download crates and Python packages. No other step uses the network.
 - A real `fetch-tiingo` download needs a token and network. Run it only when a human asks.

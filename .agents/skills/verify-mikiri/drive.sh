@@ -8,6 +8,7 @@ id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 run="results/verify-$id"
 evidence="/tmp/mikiri-verify-$id"
 log="$evidence/transcript.txt"
+[ ! -e "$run" ] || { echo "FAIL $run already exists" >&2; exit 1; }
 mkdir -p "$evidence"
 trap 'status=$?; rm -rf "$run"; [ "$status" -eq 0 ] || echo "FAIL evidence=$evidence" >&2' EXIT
 
@@ -21,7 +22,7 @@ step() {
 
 step cargo build --locked -p mikiri --bins
 
-# Same shape as synthetic_json in crates/mikiri/tests/h001_cli.rs.
+# Same dates and values as synthetic_json in crates/mikiri/tests/h001_cli.rs, without the unused adjClose.
 uv run --locked --project stats python - "$evidence/bars.json" <<'EOF'
 import json
 import sys

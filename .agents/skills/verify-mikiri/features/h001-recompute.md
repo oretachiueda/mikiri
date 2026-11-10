@@ -20,7 +20,7 @@ Preconditions:
 
 - **Match.** Run `.agents/skills/verify-mikiri/drive.sh`. In `transcript.txt` the `stats/h001.py` step prints a line that ends with `match=true`, followed by `exit=0`. The copied `verdict.json` has `"match": true` and an empty `mismatches` list.
 - **Guard.** Run `uv run --locked --project stats python stats/h001.py --run /tmp`. Stderr is `H001 input or computation failed` and the exit code is `1`.
-- **Mismatch.** Run `(cd stats && uv run --locked pytest tests/test_h001.py -k cli_match_and_mismatch)`. The test runs the same script on a matching run directory and on one with a changed summary value. It passes.
+- **Mismatch.** Run `(cd stats && uv run --locked pytest tests/test_h001.py -k cli_match_and_mismatch)`. The test runs the same script on a matching run directory and on one with a changed summary value. It passes. It makes a `results/h001-test-*` directory and deletes it when it ends.
 
 ## Gotchas
 
