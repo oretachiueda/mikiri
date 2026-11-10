@@ -3,10 +3,17 @@ name = "mikiri-stats"
 version = "0.0.0"
 requires-python = "==3.13.*"
 license = "MIT"
-dependencies = []
+dependencies = [
+    "pandas>=3.1.1",
+    "pyarrow>=26.0.1",
+]
 
 [dependency-groups]
-dev = ["ruff", "ty"]
+dev = [
+    "pytest>=9.2.0",
+    "ruff",
+    "ty",
+]
 
 [tool.uv]
 package = false
@@ -16,3 +23,7 @@ target-version = "py313"
 
 [tool.ruff.lint]
 extend-select = ["B", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
