@@ -1,6 +1,6 @@
 # Mikiri
 
-Research and fully automated execution of US equity strategies that trade on daily signals and hold for days to weeks.
+Research and fully automated execution of strategies in US-listed stocks and ETFs that trade on daily signals. Each strategy's preregistration sets its holding period.
 
 Status: scaffolding. No strategy has passed its preregistered test, and nothing trades live.
 
