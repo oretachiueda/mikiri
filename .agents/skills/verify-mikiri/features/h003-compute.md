@@ -4,6 +4,7 @@
 
 ## Sub-features
 
+- Pretax CAGR for both portfolios uses the last A divided by the first A, annualized over the calendar span. Benchmark after-tax CAGR uses terminal B from initial cash 1.
 - `compute-success` writes the three run files and reports their hashes with `main_n` and `recent_n`; `n_cumulative` is recorded in `summary.json`.
 - `compute-input` reads Tiingo daily-bar JSON arrays, using `date`, `close`, `divCash`, and `splitFactor`. Synthetic fixtures include all 13 Tiingo response fields and types. The command rejects invalid used values, insufficient signal history, and missing main-window SPXL or BIL dates.
 - `compute-psr-halt` and `compute-tax-sale-halt` fail closed when the preregistered calculations cannot continue.

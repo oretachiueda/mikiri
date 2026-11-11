@@ -24,7 +24,7 @@ The binaries are `target/debug/h001-compute`, `target/debug/h002-compute`, `targ
 ## Doctor
 
 ```bash
-command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/h002-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
+command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/h002-compute && test -x target/debug/h003-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
 ```
 
 `doctor-ok` means that the tools exist, the binaries are built, and git ignores the directories that a drive writes to. If the line prints nothing, fix that before you drive.

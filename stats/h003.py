@@ -152,7 +152,8 @@ def simulate(
     ledger = TaxLedger(dates[0].year)
     previous_u = shares * opening_bar.close
     benchmark_shares = (1 / (1 + SPY_COST * cost_multiplier)) / spy[main_spy[0]].close
-    benchmark_previous = benchmark_shares * spy[main_spy[0]].close
+    benchmark_first = benchmark_shares * spy[main_spy[0]].close
+    benchmark_previous = benchmark_first
     days = [
         {
             "date": dates[0],
@@ -304,7 +305,8 @@ def simulate(
         "strategy_cagr_pretax": (days[-1]["A"] / days[0]["A"]) ** (365.25 / cal_days)
         - 1,
         "strategy_cagr_aftertax": strategy_final ** (365.25 / cal_days) - 1,
-        "benchmark_cagr_pretax": benchmark_final ** (365.25 / cal_days) - 1,
+        "benchmark_cagr_pretax": (benchmark_a / benchmark_first) ** (365.25 / cal_days)
+        - 1,
         "benchmark_cagr_aftertax": benchmark_final ** (365.25 / cal_days) - 1,
         "strategy_drawdown": strategy_drawdown,
         "benchmark_drawdown": benchmark_drawdown,

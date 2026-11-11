@@ -206,3 +206,20 @@ fn split_dividend_switch_and_tax_sale_order() {
     assert!((window.tax_by_year[&2016] - final_income.max(0.0) * 0.20315).abs() < 1e-14);
     assert!((window.w - (final_proceeds - window.tax_by_year[&2016])).abs() < 1e-14);
 }
+
+#[test]
+fn loss_expiry_boundary() {
+    let mut taxes = Taxes::default();
+    assert_eq!(taxes.close_year(2020, -100.0), 0.0);
+    assert_eq!(taxes.close_year(2023, 40.0), 0.0);
+    assert_eq!(taxes.close_year(2024, 60.0), 0.20315 * 60.0);
+}
+
+#[test]
+fn oldest_loss_first() {
+    let mut taxes = Taxes::default();
+    assert_eq!(taxes.close_year(2020, -100.0), 0.0);
+    assert_eq!(taxes.close_year(2021, -100.0), 0.0);
+    assert_eq!(taxes.close_year(2023, 100.0), 0.0);
+    assert_eq!(taxes.close_year(2024, 100.0), 0.0);
+}

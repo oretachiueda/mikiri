@@ -278,7 +278,7 @@ fn simulate(
             b: previous_b,
             strategy_cagr_pretax: cagr(a / first_v),
             strategy_cagr_aftertax: cagr(previous_u),
-            benchmark_cagr_pretax: cagr(previous_b),
+            benchmark_cagr_pretax: cagr(benchmark_a / first_b),
             benchmark_cagr_aftertax: cagr(previous_b),
             strategy_drawdown: dd,
             benchmark_drawdown: bdd,

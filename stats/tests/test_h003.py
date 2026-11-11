@@ -129,15 +129,23 @@ def test_future_bars_do_not_change_prior_signal_or_wealth(monkeypatch):
     spy, spxl, bil = small_bars()
     monkeypatch.setattr(h003, "SIGNAL_LOOKBACK", 2)
     original, _ = simulate(spy, spxl, bil, date(2022, 12, 29), date(2023, 1, 4))
-    changed = [
-        replace(bar, close=bar.close * 7) if bar.date == date(2023, 1, 4) else bar
-        for bar in spy
+    boundary = date(2022, 12, 30)
+    changed = tuple(
+        [
+            replace(bar, close=bar.close * 7) if bar.date > boundary else bar
+            for bar in rows
+        ]
+        for rows in (spy, spxl, bil)
+    )
+    replay, _ = simulate(
+        changed[0], changed[1], changed[2], date(2022, 12, 29), date(2023, 1, 4)
+    )
+    assert [row for row in original if row["date"] <= boundary] == [
+        row for row in replay if row["date"] <= boundary
     ]
-    replay, _ = simulate(changed, spxl, bil, date(2022, 12, 29), date(2023, 1, 4))
-    assert [row for row in original[:-1]] == [row for row in replay[:-1]]
     _, signals_before = signal_history(spy)
-    _, signals_after = signal_history(changed)
-    assert signals_before[:-1] == signals_after[:-1]
+    _, signals_after = signal_history(changed[0])
+    assert signals_before[:4] == signals_after[:4]
 
 
 def test_comparison_uses_relative_tolerance_and_exact_fields():
@@ -183,3 +191,20 @@ def test_comparison_uses_relative_tolerance_and_exact_fields():
 def test_invalid_bar_values_fail_closed(bad):
     with pytest.raises(ValueError, match="invalid bar value"):
         validate_bars([bad])
+
+
+def test_loss_expiry_boundary():
+    ledger = TaxLedger(2020)
+    ledger.add(2020, -100)
+    assert ledger.settle(2020) == 0
+    ledger.add(2023, 40)
+    assert ledger.settle(2023) == 0
+    ledger.add(2024, 60)
+    assert ledger.settle(2024) == pytest.approx(0.20315 * 60)
+
+
+def test_oldest_loss_first():
+    ledger = TaxLedger(2020)
+    for year, income in ((2020, -100), (2021, -100), (2023, 100), (2024, 100)):
+        ledger.add(year, income)
+        assert ledger.settle(year) == 0
