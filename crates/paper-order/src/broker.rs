@@ -148,17 +148,19 @@ async fn read_position(shared: &SharedClientHandle, account: &str) -> anyhow::Re
         let mut total = 0_i64;
         while let Some(item) = positions.next().await {
             match item.context("failed to read positions")? {
-                PositionUpdate::Position(position)
-                    if position.account == account
-                        && position.contract.symbol.as_str() == "SPY"
-                        && position.contract.security_type == SecurityType::Stock
-                        && position.contract.currency.as_str() == "USD" =>
-                {
-                    let shares = shares_from_f64(position.position)?;
-                    total = total.checked_add(shares).context("SPY position overflow")?;
+                PositionUpdate::Position(position) => {
+                    if let Some(shares) = position_row_shares(
+                        position.contract.symbol.as_str(),
+                        &position.contract.security_type,
+                        position.contract.currency.as_str(),
+                        &position.account,
+                        account,
+                        position.position,
+                    )? {
+                        total = total.checked_add(shares).context("SPY position overflow")?;
+                    }
                 }
                 PositionUpdate::PositionEnd => return Ok(total),
-                PositionUpdate::Position(_) => {}
             }
         }
         anyhow::bail!("position stream ended before PositionEnd")
@@ -178,15 +180,18 @@ async fn read_open_orders(shared: &SharedClientHandle, account: &str) -> anyhow:
         let mut count = 0_usize;
         while let Some(item) = orders.next().await {
             if let Orders::OrderData(data) = item.context("failed to read open orders")?
-                && data.order.account == account
-                && data.contract.symbol.as_str() == "SPY"
-                && data.contract.security_type == SecurityType::Stock
-                && data.contract.currency.as_str() == "USD"
+                && open_order_row_matches(
+                    data.contract.symbol.as_str(),
+                    &data.contract.security_type,
+                    data.contract.currency.as_str(),
+                    &data.order.account,
+                    account,
+                )?
             {
                 count = count.checked_add(1).context("open-order count overflow")?;
             }
         }
-        Ok::<_, anyhow::Error>(count)
+        finish_open_orders(count, shared.is_connected())
     })
     .await
     .map_err(|_| anyhow::anyhow!("timed out reading open orders"))?
@@ -241,6 +246,49 @@ async fn read_daily_pnl(shared: &SharedClientHandle, account: &str) -> anyhow::R
     })
     .await
     .map_err(|_| anyhow::anyhow!("timed out reading daily P&L"))?
+}
+
+fn position_row_shares(
+    symbol: &str,
+    security_type: &SecurityType,
+    currency: &str,
+    actual_account: &str,
+    verified_account: &str,
+    quantity: f64,
+) -> anyhow::Result<Option<i64>> {
+    if !is_spy_stock_usd(symbol, security_type, currency) {
+        return Ok(None);
+    }
+    require_verified_account(actual_account, verified_account)?;
+    shares_from_f64(quantity).map(Some)
+}
+
+fn open_order_row_matches(
+    symbol: &str,
+    security_type: &SecurityType,
+    currency: &str,
+    actual_account: &str,
+    verified_account: &str,
+) -> anyhow::Result<bool> {
+    if !is_spy_stock_usd(symbol, security_type, currency) {
+        return Ok(false);
+    }
+    require_verified_account(actual_account, verified_account)?;
+    Ok(true)
+}
+
+fn is_spy_stock_usd(symbol: &str, security_type: &SecurityType, currency: &str) -> bool {
+    symbol == "SPY" && security_type == &SecurityType::Stock && currency == "USD"
+}
+
+fn require_verified_account(actual: &str, verified: &str) -> anyhow::Result<()> {
+    ensure!(actual == verified, "SPY account identity mismatch");
+    Ok(())
+}
+
+fn finish_open_orders(count: usize, connected: bool) -> anyhow::Result<usize> {
+    ensure!(connected, "IB disconnected while reading open orders");
+    Ok(count)
 }
 
 fn shares_from_f64(position: f64) -> anyhow::Result<i64> {
@@ -308,5 +356,43 @@ mod tests {
         assert!(shares_from_f64(-(i64::MIN as f64)).is_err());
         assert!(shares_from_f64(i64::MAX as f64).is_err());
         assert!(shares_from_f64(1.5).is_err());
+    }
+
+    #[test]
+    fn target_positions_reject_mismatched_or_blank_account() {
+        for account in ["DU999", ""] {
+            assert!(
+                position_row_shares("SPY", &SecurityType::Stock, "USD", account, "DU123", 1.0)
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            position_row_shares("SPY", &SecurityType::Stock, "USD", "DU123", "DU123", 1.0).unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            position_row_shares("QQQ", &SecurityType::Stock, "USD", "", "DU123", 1.0).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn target_open_orders_reject_mismatched_or_blank_account() {
+        for account in ["DU999", ""] {
+            assert!(
+                open_order_row_matches("SPY", &SecurityType::Stock, "USD", account, "DU123")
+                    .is_err()
+            );
+        }
+        assert!(
+            open_order_row_matches("SPY", &SecurityType::Stock, "USD", "DU123", "DU123").unwrap()
+        );
+        assert!(!open_order_row_matches("QQQ", &SecurityType::Stock, "USD", "", "DU123").unwrap());
+    }
+
+    #[test]
+    fn disconnected_open_order_stream_end_is_an_error_even_when_empty() {
+        assert!(finish_open_orders(0, false).is_err());
+        assert_eq!(finish_open_orders(0, true).unwrap(), 0);
     }
 }

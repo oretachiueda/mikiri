@@ -1,6 +1,6 @@
 pub fn mask(text: &str, account: Option<&str>) -> String {
     let text = match account.filter(|account| !account.is_empty()) {
-        Some(account) => text.replace(account, "<account>"),
+        Some(account) => mask_known_account(text, account),
         None => text.to_owned(),
     };
     let chars: Vec<char> = text.chars().collect();
@@ -9,10 +9,14 @@ pub fn mask(text: &str, account: Option<&str>) -> String {
     while i < chars.len() {
         if matches!(chars[i], 'D' | 'U') && (i == 0 || !chars[i - 1].is_alphanumeric()) {
             let mut end = i + 1;
+            while end < chars.len() && chars[end].is_ascii_uppercase() {
+                end += 1;
+            }
+            let digit_start = end;
             while end < chars.len() && chars[end].is_ascii_digit() {
                 end += 1;
             }
-            if end > i + 1 && (end == chars.len() || !chars[end].is_alphanumeric()) {
+            if end > digit_start && (end == chars.len() || !chars[end].is_alphanumeric()) {
                 masked.push_str("<account>");
                 i = end;
                 continue;
@@ -20,6 +24,28 @@ pub fn mask(text: &str, account: Option<&str>) -> String {
         }
         masked.push(chars[i]);
         i += 1;
+    }
+    masked
+}
+
+fn mask_known_account(text: &str, account: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let account: Vec<char> = account.chars().collect();
+    let mut masked = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let end = i + account.len();
+        if end <= chars.len()
+            && chars[i..end] == account
+            && (i == 0 || !chars[i - 1].is_alphanumeric())
+            && (end == chars.len() || !chars[end].is_alphanumeric())
+        {
+            masked.push_str("<account>");
+            i = end;
+        } else {
+            masked.push(chars[i]);
+            i += 1;
+        }
     }
     masked
 }
@@ -64,7 +90,22 @@ mod tests {
             "account <account>; <account> <account>"
         );
         assert_eq!(mask("D321 U654", None), "<account> <account>");
+        assert_eq!(mask("notice DU1234567", None), "notice <account>");
+        assert_eq!(mask("DABC321 UDU456", None), "<account> <account>");
+        assert_eq!(
+            mask("DU1111111 DU2222222", Some("DU1111111")),
+            "<account> <account>"
+        );
+        assert_eq!(mask("DU12345678", Some("DU1234567")), "<account>");
         assert_eq!(mask("", Some("")), "");
+    }
+
+    #[test]
+    fn known_account_replacement_respects_token_boundaries() {
+        assert_eq!(
+            mask("ACCT::765 XACCT::765Y (ACCT::765)", Some("ACCT::765")),
+            "<account> XACCT::765Y (<account>)"
+        );
     }
 
     #[test]

@@ -91,15 +91,11 @@ pub fn paper_account(accounts: &[String]) -> Result<&str, String> {
     }
 }
 
-pub fn order_id(key: &str, strategy: &str, symbol: &str) -> Result<String, String> {
-    if strategy.contains('-')
-        || strategy.contains(':')
-        || symbol.contains('-')
-        || symbol.contains(':')
-    {
-        return Err("strategy and symbol must not contain '-' or ':'".into());
+pub fn order_id(intent: &guard::Intent) -> Result<String, String> {
+    if intent.strategy().contains('-') || intent.symbol().contains('-') {
+        return Err("strategy and symbol must not contain '-'".into());
     }
-    Ok(key.replace(':', "-"))
+    Ok(intent.key().replace(':', "-"))
 }
 
 pub fn gate(
@@ -139,10 +135,22 @@ pub fn terminal_exit(value: Terminal) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guard::Side;
     use proptest::prelude::*;
 
     fn instant(s: &str) -> Timestamp {
         s.parse().expect("valid test instant")
+    }
+
+    fn order_intent(strategy: &str, symbol: &str) -> guard::Intent {
+        guard::Intent::new(
+            time::macros::date!(2026 - 11 - 12),
+            strategy,
+            symbol,
+            Side::Buy,
+            1,
+        )
+        .expect("valid order intent")
     }
 
     #[test]
@@ -240,9 +248,11 @@ mod tests {
         assert!(paper_account(&[]).is_err());
         assert!(paper_account(&["D1".into(), "D2".into()]).is_err());
         assert_eq!(
-            order_id("2026-11-12:demo:SPY:buy", "demo", "SPY"),
+            order_id(&order_intent("demo", "SPY")),
             Ok("2026-11-12-demo-SPY-buy".into())
         );
+        assert!(order_id(&order_intent("bad-strategy", "SPY")).is_err());
+        assert!(order_id(&order_intent("demo", "bad-symbol")).is_err());
         assert_eq!(gate(2, 2, 0, Some(-1.0)), Ok(-1.0));
         assert!(gate(2, 1, 0, Some(0.0)).is_err());
         assert!(gate(2, 2, 1, Some(0.0)).is_err());
@@ -274,15 +284,17 @@ mod tests {
 
     proptest! {
         #[test]
-        fn id_mapping_is_injective_for_allowed_parts(a in "[A-Za-z0-9]+", b in "[A-Za-z0-9]+") {
-            let key_a = format!("2026-11-12:{a}:SPY:buy");
-            let key_b = format!("2026-11-12:{b}:SPY:buy");
-            let id_a = order_id(&key_a, &a, "SPY").unwrap();
-            prop_assert_eq!(&id_a, &key_a.replace(':', "-"));
-            if a != b { prop_assert_ne!(id_a, order_id(&key_b, &b, "SPY").unwrap()); }
-            prop_assert!(order_id("key", "bad-strategy", "SPY").is_err());
-            prop_assert!(order_id("key", "bad:strategy", "SPY").is_err());
-            prop_assert!(order_id("key", "demo", "SP:Y").is_err());
+        fn id_mapping_is_injective_for_allowed_intents(
+            strategy_a in "[A-Za-z0-9]+", strategy_b in "[A-Za-z0-9]+",
+            symbol_a in "[A-Za-z0-9]+", symbol_b in "[A-Za-z0-9]+"
+        ) {
+            let intent_a = order_intent(&strategy_a, &symbol_a);
+            let intent_b = order_intent(&strategy_b, &symbol_b);
+            let id_a = order_id(&intent_a).unwrap();
+            prop_assert_eq!(&id_a, &intent_a.key().replace(':', "-"));
+            if strategy_a != strategy_b || symbol_a != symbol_b {
+                prop_assert_ne!(id_a, order_id(&intent_b).unwrap());
+            }
         }
     }
 }

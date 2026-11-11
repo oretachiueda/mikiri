@@ -36,6 +36,7 @@ pub struct DemoStrategy {
     receiver: Receiver<Recorded>,
     result: Arc<Mutex<Option<(String, u8)>>>,
     handle: LiveNodeHandle,
+    account: String,
     instrument: InstrumentId,
     submitted: Option<Submitted>,
     finished: bool,
@@ -46,6 +47,7 @@ impl DemoStrategy {
         receiver: Receiver<Recorded>,
         result: Arc<Mutex<Option<(String, u8)>>>,
         handle: LiveNodeHandle,
+        account: String,
     ) -> anyhow::Result<Self> {
         let config = StrategyConfig::builder()
             .strategy_id(StrategyId::new_checked("demo-001")?)
@@ -58,6 +60,7 @@ impl DemoStrategy {
             receiver,
             result,
             handle,
+            account,
             instrument: "SPY=STK.SMART".parse()?,
             submitted: None,
             finished: false,
@@ -76,14 +79,26 @@ impl DemoStrategy {
         self.handle.stop();
     }
 
+    fn finish_reason(&mut self, status: &str, reason: &str, terminal: Terminal) {
+        let reason = crate::errors::mask(reason, Some(&self.account))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let reason = if reason.is_empty() {
+            "unavailable"
+        } else {
+            &reason
+        };
+        self.finish(format!("{status} reason={reason}"), terminal);
+    }
+
     fn submit_recorded(&mut self, recorded: Recorded) -> anyhow::Result<()> {
         let intent = recorded.intent();
         anyhow::ensure!(
             intent.strategy() == "demo" && intent.symbol() == "SPY",
             "unexpected recorded intent"
         );
-        let id = order_id(recorded.key(), intent.strategy(), intent.symbol())
-            .map_err(anyhow::Error::msg)?;
+        let id = order_id(intent).map_err(anyhow::Error::msg)?;
         let id = ClientOrderId::new_checked(id)?;
         let current = self
             .cache()
@@ -196,17 +211,24 @@ nautilus_strategy!(DemoStrategy, {
                     );
                 }
             }
-            OrderEventAny::Rejected(_) | OrderEventAny::Denied(_) => {
-                self.finish(
-                    "rejected reason=broker_or_risk_rejection".into(),
-                    Terminal::Rejected,
-                );
+            OrderEventAny::Rejected(event) => {
+                self.finish_reason("rejected", event.reason.as_str(), Terminal::Rejected);
             }
-            OrderEventAny::Canceled(_) | OrderEventAny::Expired(_) => {
-                self.finish(
-                    "canceled reason=broker_terminal_status".into(),
+            OrderEventAny::Denied(event) => {
+                self.finish_reason("rejected", event.reason.as_str(), Terminal::Rejected);
+            }
+            OrderEventAny::Canceled(event) => {
+                self.finish_reason(
+                    "canceled",
+                    event
+                        .reason
+                        .as_ref()
+                        .map_or("canceled", |reason| reason.as_str()),
                     Terminal::Canceled,
                 );
+            }
+            OrderEventAny::Expired(_) => {
+                self.finish_reason("canceled", "expired", Terminal::Canceled);
             }
             _ => {}
         }
@@ -249,14 +271,152 @@ fn market_order(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nautilus_model::enums::OrderType;
+    use nautilus_model::{
+        enums::OrderType,
+        events::{OrderCanceled, OrderDenied, OrderExpired, OrderRejected},
+        identifiers::AccountId,
+    };
+
+    #[test]
+    fn terminal_events_report_masked_reasons_without_resubmitting() {
+        let trader = TraderId::new("DEMO-001");
+        let strategy_id = StrategyId::new("demo-001");
+        let instrument = "SPY=STK.SMART".parse().unwrap();
+        let id = ClientOrderId::new("2026-11-11-demo-SPY-buy");
+        let event_id = UUID4::new();
+        let now = UnixNanos::default();
+        let reason = "201 account SYNTHETIC-ACCOUNT\nD123 U456";
+        let cases = [
+            (
+                OrderEventAny::Rejected(OrderRejected::new(
+                    trader,
+                    strategy_id,
+                    instrument,
+                    id,
+                    AccountId::new("IB-D123"),
+                    reason.into(),
+                    event_id,
+                    now,
+                    now,
+                    false,
+                    false,
+                )),
+                "rejected reason=201 account <account> <account> <account>",
+            ),
+            (
+                OrderEventAny::Denied(OrderDenied::new(
+                    trader,
+                    strategy_id,
+                    instrument,
+                    id,
+                    reason.into(),
+                    event_id,
+                    now,
+                    now,
+                )),
+                "rejected reason=201 account <account> <account> <account>",
+            ),
+            (
+                OrderEventAny::Canceled(OrderCanceled::new(
+                    trader,
+                    strategy_id,
+                    instrument,
+                    id,
+                    event_id,
+                    now,
+                    now,
+                    false,
+                    None,
+                    None,
+                    Some(reason.into()),
+                )),
+                "canceled reason=201 account <account> <account> <account>",
+            ),
+            (
+                OrderEventAny::Canceled(OrderCanceled::new(
+                    trader,
+                    strategy_id,
+                    instrument,
+                    id,
+                    event_id,
+                    now,
+                    now,
+                    false,
+                    None,
+                    None,
+                    None,
+                )),
+                "canceled reason=canceled",
+            ),
+            (
+                OrderEventAny::Expired(OrderExpired::new(
+                    trader,
+                    strategy_id,
+                    instrument,
+                    id,
+                    event_id,
+                    now,
+                    now,
+                    false,
+                    None,
+                    None,
+                )),
+                "canceled reason=expired",
+            ),
+            (
+                OrderEventAny::Denied(OrderDenied::new(
+                    trader,
+                    strategy_id,
+                    instrument,
+                    id,
+                    "\n \t".into(),
+                    event_id,
+                    now,
+                    now,
+                )),
+                "rejected reason=unavailable",
+            ),
+        ];
+        for (event, expected) in cases {
+            let (_sender, receiver) = std::sync::mpsc::channel();
+            let result = Arc::new(Mutex::new(None));
+            let mut strategy = DemoStrategy::new(
+                receiver,
+                result.clone(),
+                LiveNodeHandle::default(),
+                "SYNTHETIC-ACCOUNT".into(),
+            )
+            .unwrap();
+            strategy.submitted = Some(Submitted {
+                id,
+                side: "buy",
+                shares: 1,
+                position: 1,
+                started: Instant::now(),
+            });
+            Strategy::on_order_event(&mut strategy, event.clone());
+            Strategy::on_order_event(&mut strategy, event);
+            assert_eq!(*result.lock().unwrap(), Some((expected.into(), 1)));
+            assert!(strategy.finished);
+            assert_eq!(strategy.submitted.as_ref().unwrap().id, id);
+            assert!(matches!(
+                strategy.receiver.try_recv(),
+                Err(TryRecvError::Empty)
+            ));
+        }
+    }
 
     #[test]
     fn timeout_leaves_order_pending_and_finishes_only_once() {
         let (_sender, receiver) = std::sync::mpsc::channel();
         let result = Arc::new(Mutex::new(None));
-        let mut strategy =
-            DemoStrategy::new(receiver, result.clone(), LiveNodeHandle::default()).unwrap();
+        let mut strategy = DemoStrategy::new(
+            receiver,
+            result.clone(),
+            LiveNodeHandle::default(),
+            "SYNTHETIC-ACCOUNT".into(),
+        )
+        .unwrap();
         assert!(!strategy.config().manage_stop);
         strategy.submitted = Some(Submitted {
             id: ClientOrderId::new("2026-11-11-demo-SPY-buy"),
@@ -286,8 +446,13 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         drop(sender);
         let result = Arc::new(Mutex::new(None));
-        let mut strategy =
-            DemoStrategy::new(receiver, result.clone(), LiveNodeHandle::default()).unwrap();
+        let mut strategy = DemoStrategy::new(
+            receiver,
+            result.clone(),
+            LiveNodeHandle::default(),
+            "SYNTHETIC-ACCOUNT".into(),
+        )
+        .unwrap();
         let event = TimeEvent::new(
             "paper-order-poll".into(),
             UUID4::new(),

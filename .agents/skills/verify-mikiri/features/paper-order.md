@@ -7,10 +7,13 @@
 - Required `--config` and `--journal`; buy and sell also require positive integer `--shares`.
 - Missing, invalid, expired, or killed limits stop before connection.
 - Orders require New York weekdays 09:35–15:55, one D-prefixed managed account, matching journal position, no open SPY order, and known finite USD daily P&L.
+- Any SPY stock/USD row with a missing or different account identity refuses the read; a disconnected open-order stream also refuses.
 - Durable journal keys prevent same-day duplicate intents. Rejected and pending keys remain used.
 - Timeout never cancels or resubmits. Shutdown never closes a position.
 - Buy/sell use a LiveNode and require Read-Only API OFF. TWS error 321 reports `refused: TWS API is read-only`; status never requests order IDs.
 - Status prints `daily_pnl_usd=unknown` when P&L is unavailable, invalid, or times out. Position, journal, and open-order read failures still refuse. Buy/sell reject unknown P&L.
+- Stored terminal outcomes survive shutdown errors. Shutdown errors go to masked stderr and force exit 1. The journal stays locked until node disposal, including early failures.
+- Rejected/denied/canceled/expired events report their masked reason; if the protocol has no reason field, the status is used.
 - Errors keep one stdout line and print the full error chain on stderr with account identifiers masked.
 
 ## How to get to it (user POV)

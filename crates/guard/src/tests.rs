@@ -393,3 +393,12 @@ fn journal_net_shares_filters_and_survives_reopen() {
     let journal = Journal::open(path).unwrap();
     assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 3);
 }
+
+#[test]
+fn journal_share_sum_rejects_positive_and_negative_overflow() {
+    for deltas in [[i64::MAX, 1], [i64::MIN, -1]] {
+        assert!(matches!(sum_shares(deltas), Err(JournalError::Overflow)));
+    }
+    assert_eq!(sum_shares([i64::MAX, -1]).unwrap(), i64::MAX - 1);
+    assert_eq!(sum_shares([i64::MIN, 1]).unwrap(), i64::MIN + 1);
+}
