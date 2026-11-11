@@ -23,6 +23,7 @@ The baseline in [README.md](README.md) holds. Run the success recipe first. Set 
 
 ## Gotchas
 
+- The OSAP input uses ZSTD compression for all columns.
 - The drive removes its own run directory when it exits. It keeps the synthetic input, summary, verdict, transcript, and output hashes in the evidence directory.
 - The Python batch can check the form of the input hash and excluded reference count. The original input and excluded rows are outside its run directory.
 - The synthetic run verifies the CLI behavior and agreement between the implementations. It supplies no market evidence.

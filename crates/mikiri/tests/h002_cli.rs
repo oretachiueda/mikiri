@@ -1,7 +1,11 @@
 use arrow_array::{
     ArrayRef, Date32Array, Float64Array, LargeStringArray, RecordBatch, StringArray,
 };
-use parquet::arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder};
+use parquet::{
+    arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
+    basic::Compression,
+    file::properties::WriterProperties,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -32,6 +36,15 @@ impl Workspace {
     }
 
     fn input(&self, rows: &[Row], large: bool) -> String {
+        self.input_with_compression(rows, large, Compression::UNCOMPRESSED)
+    }
+
+    fn input_with_compression(
+        &self,
+        rows: &[Row],
+        large: bool,
+        compression: Compression,
+    ) -> String {
         let strings = |values: Vec<&str>| -> ArrayRef {
             if large {
                 Arc::new(LargeStringArray::from(values))
@@ -60,9 +73,15 @@ impl Workspace {
         ])
         .expect("batch");
         let path = self.0.join("ports.parquet");
-        let mut writer =
-            ArrowWriter::try_new(File::create(&path).expect("create"), batch.schema(), None)
-                .expect("writer");
+        let properties = WriterProperties::builder()
+            .set_compression(compression)
+            .build();
+        let mut writer = ArrowWriter::try_new(
+            File::create(&path).expect("create"),
+            batch.schema(),
+            Some(properties),
+        )
+        .expect("writer");
         writer.write(&batch).expect("write");
         writer.close().expect("close");
         self.hash("ports.parquet")
@@ -155,11 +174,11 @@ fn assert_failure(output: &Output, message: &str) {
     assert_eq!(String::from_utf8_lossy(&output.stderr).trim_end(), message);
 }
 
-fn check_invariance(original: &[Row], altered: &[Row], large: bool) {
+fn check_invariance(original: &[Row], altered: &[Row], large: bool, compression: Compression) {
     let work = Workspace::new();
     let a = work.input(original, false);
     assert_success(&work.run(&a, "results/a"));
-    let b = work.input(altered, large);
+    let b = work.input_with_compression(altered, large, compression);
     assert_ne!(a, b);
     assert_success(&work.run(&b, "results/b"));
     assert_eq!(
@@ -185,7 +204,13 @@ fn holdout_changes_leave_outputs_invariant_except_input_hash() {
     for row in altered.iter_mut().filter(|row| row.month >= HOLDOUT_START) {
         row.ret = if row.port == "LS" { 999.0 } else { -50.0 };
     }
-    check_invariance(&original, &altered, false);
+    check_invariance(&original, &altered, false, Compression::UNCOMPRESSED);
+}
+
+#[test]
+fn zstd_and_uncompressed_inputs_give_identical_results_except_input_hash() {
+    let input = rows(|month| varying(6.0, month));
+    check_invariance(&input, &input, false, Compression::ZSTD(Default::default()));
 }
 
 #[test]
@@ -358,7 +383,7 @@ fn ignores_other_signals_before_validating_values() {
         month: MAIN_START,
         ret: f64::INFINITY,
     });
-    check_invariance(&input, &altered, false);
+    check_invariance(&input, &altered, false, Compression::UNCOMPRESSED);
 }
 
 #[test]
@@ -379,7 +404,7 @@ fn rejects_duplicate_port_even_on_different_dates_in_the_month() {
 #[test]
 fn utf8_and_large_utf8_give_identical_results_except_input_hash() {
     let input = rows(|month| varying(6.0, month));
-    check_invariance(&input, &input, true);
+    check_invariance(&input, &input, true, Compression::UNCOMPRESSED);
 }
 
 #[test]
