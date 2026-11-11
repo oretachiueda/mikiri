@@ -16,7 +16,7 @@ use nautilus_interactive_brokers::{
     common::shared_client::{self, SharedClientHandle},
     config::{
         InteractiveBrokersDataClientConfig, InteractiveBrokersExecutionClientConfig,
-        InteractiveBrokersInstrumentProviderConfig, MarketDataType,
+        InteractiveBrokersInstrumentProviderConfig, MarketDataType, SymbologyMethod,
     },
     factories::{InteractiveBrokersDataClientFactory, InteractiveBrokersExecutionClientFactory},
 };
@@ -34,23 +34,30 @@ pub struct Snapshot {
     pub daily_pnl_usd: Option<f64>,
 }
 
-pub async fn build_node() -> anyhow::Result<(LiveNode, SharedClientHandle)> {
+pub async fn connect() -> anyhow::Result<(SharedClientHandle, String)> {
     let shared = shared_client::get_or_connect(HOST, PORT, CLIENT_ID, 10, Some(0))
         .await
-        .map_err(|_| anyhow::anyhow!("failed to connect to TWS"))?;
+        .context("failed to connect to TWS")?;
     let accounts = tokio::time::timeout(REQUEST_TIMEOUT, shared.managed_accounts())
         .await
         .map_err(|_| anyhow::anyhow!("timed out reading managed accounts"))?
-        .map_err(|_| anyhow::anyhow!("failed to read managed accounts"))?;
+        .context("failed to read managed accounts")?;
     let account = crate::cli::paper_account(&accounts).map_err(anyhow::Error::msg)?;
 
-    let instrument_id = InstrumentId::from("SPY=STK.SMART");
-    let mut load_ids = HashSet::new();
-    load_ids.insert(instrument_id);
-    let provider = InteractiveBrokersInstrumentProviderConfig {
-        load_ids,
-        ..Default::default()
-    };
+    Ok((shared, account.to_owned()))
+}
+
+pub async fn require_writable(shared: &SharedClientHandle) -> anyhow::Result<()> {
+    // The execution engine discards connect errors; preserve TWS 321 before startup.
+    tokio::time::timeout(REQUEST_TIMEOUT, shared.next_valid_order_id())
+        .await
+        .context("timed out checking TWS API mode")?
+        .context("cannot initialize execution order IDs")?;
+    Ok(())
+}
+
+pub fn build_node(account: &str) -> anyhow::Result<LiveNode> {
+    let provider = instrument_provider();
     let data_config = InteractiveBrokersDataClientConfig {
         host: HOST.to_owned(),
         port: PORT,
@@ -90,14 +97,22 @@ pub async fn build_node() -> anyhow::Result<(LiveNode, SharedClientHandle)> {
         )?
         .build()?;
 
-    Ok((node, shared))
+    Ok(node)
+}
+
+fn instrument_provider() -> InteractiveBrokersInstrumentProviderConfig {
+    InteractiveBrokersInstrumentProviderConfig {
+        load_ids: HashSet::from([InstrumentId::from("SPY=STK.SMART")]),
+        symbology_method: SymbologyMethod::Raw,
+        ..Default::default()
+    }
 }
 
 pub async fn snapshot(shared: &SharedClientHandle) -> anyhow::Result<Snapshot> {
     let accounts = tokio::time::timeout(REQUEST_TIMEOUT, shared.managed_accounts())
         .await
         .map_err(|_| anyhow::anyhow!("timed out verifying managed accounts"))?
-        .map_err(|_| anyhow::anyhow!("failed to verify managed accounts"))?;
+        .context("failed to verify managed accounts")?;
     let account = crate::cli::paper_account(&accounts).map_err(anyhow::Error::msg)?;
     let position = read_position(shared, account).await?;
     let open_orders = read_open_orders(shared, account).await?;
@@ -114,11 +129,11 @@ async fn read_position(shared: &SharedClientHandle, account: &str) -> anyhow::Re
         let mut positions = shared
             .positions()
             .await
-            .map_err(|_| anyhow::anyhow!("failed to request positions"))?
+            .context("failed to request positions")?
             .filter_data();
         let mut total = 0_i64;
         while let Some(item) = positions.next().await {
-            match item.map_err(|_| anyhow::anyhow!("failed to read positions"))? {
+            match item.context("failed to read positions")? {
                 PositionUpdate::Position(position)
                     if position.account == account
                         && position.contract.symbol.as_str() == "SPY"
@@ -144,12 +159,11 @@ async fn read_open_orders(shared: &SharedClientHandle, account: &str) -> anyhow:
         let mut orders = shared
             .all_open_orders()
             .await
-            .map_err(|_| anyhow::anyhow!("failed to request open orders"))?
+            .context("failed to request open orders")?
             .filter_data();
         let mut count = 0_usize;
         while let Some(item) = orders.next().await {
-            if let Orders::OrderData(data) =
-                item.map_err(|_| anyhow::anyhow!("failed to read open orders"))?
+            if let Orders::OrderData(data) = item.context("failed to read open orders")?
                 && data.order.account == account
                 && data.contract.symbol.as_str() == "SPY"
                 && data.contract.security_type == SecurityType::Stock
@@ -172,12 +186,12 @@ async fn read_daily_pnl(shared: &SharedClientHandle, account: &str) -> anyhow::R
                 &[ibapi::accounts::AccountSummaryTags::NET_LIQUIDATION],
             )
             .await
-            .map_err(|_| anyhow::anyhow!("failed to verify account currency"))?
+            .context("failed to verify account currency")?
             .filter_data();
         let mut usd_base = false;
         let mut matching_rows = 0;
         while let Some(item) = summary.next().await {
-            match item.map_err(|_| anyhow::anyhow!("failed to read account currency"))? {
+            match item.context("failed to read account currency")? {
                 AccountSummaryResult::Summary(row)
                     if row.account == account
                         && row.tag == ibapi::accounts::AccountSummaryTags::NET_LIQUIDATION =>
@@ -196,13 +210,13 @@ async fn read_daily_pnl(shared: &SharedClientHandle, account: &str) -> anyhow::R
         let mut pnl = shared
             .pnl(&AccountId::from(account), None)
             .await
-            .map_err(|_| anyhow::anyhow!("failed to subscribe to daily P&L"))?
+            .context("failed to subscribe to daily P&L")?
             .filter_data();
         let value = pnl
             .next()
             .await
             .transpose()
-            .map_err(|_| anyhow::anyhow!("failed to read daily P&L"))?;
+            .context("failed to read daily P&L")?;
         Ok(value
             .map(|value| value.daily_pnl)
             .filter(|value| value.is_finite()))
@@ -224,7 +238,26 @@ fn shares_from_f64(position: f64) -> anyhow::Result<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::shares_from_f64;
+    use super::*;
+
+    #[test]
+    fn preload_ids_match_provider_symbology() {
+        use ibapi::contracts::Contract;
+        use nautilus_interactive_brokers::common::symbology::Symbology;
+        use nautilus_model::identifiers::Venue;
+
+        let config = instrument_provider();
+        let contract = Contract::stock("SPY").build();
+        let id = Symbology::new(config.symbology_method)
+            .instrument_id(&contract, Some(Venue::from("SMART")))
+            .unwrap();
+        assert_eq!(id, InstrumentId::from("SPY=STK.SMART"));
+        assert!(config.load_ids.contains(&id));
+        let simplified = Symbology::new(SymbologyMethod::Simplified)
+            .instrument_id(&contract, Some(Venue::from("SMART")))
+            .unwrap();
+        assert_ne!(id, simplified);
+    }
 
     #[test]
     fn share_conversion_rejects_float_rounding_at_integer_bounds() {
