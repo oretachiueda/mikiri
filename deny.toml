@@ -8,14 +8,32 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
-    "LGPL-3.0-or-later", # NautilusTrader
     "MIT",
     "Unicode-3.0",
     "Zlib",
 ]
 private = { ignore = true }
 # Compile-time only, via const-random-macro under parquet and arrow.
-exceptions = [{ allow = ["CC0-1.0"], crate = "tiny-keccak" }]
+exceptions = [
+    { allow = ["CC0-1.0"], crate = "tiny-keccak" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-common" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-core" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-cryptography" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-execution" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-interactive-brokers" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-live" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-macros" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-model" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-network" },
+    { allow = ["BSD-2-Clause-Patent"], crate = "ustr" },
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
+]
+
+[[licenses.clarify]]
+crate = "implied-vol@2.1.0"
+expression = "MIT"
+license-files = [{ path = "LICENSE", hash = 0x526ab6d5 }]
 
 [bans]
 wildcards = "deny"

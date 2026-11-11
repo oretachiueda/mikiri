@@ -1,6 +1,6 @@
 ---
 name: verify-mikiri
-description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, stats/h001.py, stats/h002.py, stats/h003.py, fetch-tiingo) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
+description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, stats/h001.py, stats/h002.py, stats/h003.py, fetch-tiingo, ib-probe) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
 ---
 
 # Verify Mikiri
@@ -40,6 +40,8 @@ The script makes synthetic weekday bars from 2005-11-01 to 2026-10-30, runs `h00
 Run `.agents/skills/verify-mikiri/drive-h002.sh` to verify both H002 commands on synthetic monthly portfolios and keep proof in `/tmp/mikiri-verify-h002-<id>/`.
 
 Run `.agents/skills/verify-mikiri/drive-h003.sh` to verify H003 compute and independent Python recompute on synthetic Tiingo-format SPY, SPXL, and BIL arrays and keep proof in `/tmp/mikiri-verify-h003-<id>/`.
+
+Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Drive its offline argument and connection-failure paths with `features/ib-probe.md`. A real connection requires human-run TWS and explicit authorization; the skill does not drive it.
 
 Error paths and the other entry points are in `features/`. Each recipe there is a literal command with its expected output.
 

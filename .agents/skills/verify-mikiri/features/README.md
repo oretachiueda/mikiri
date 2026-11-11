@@ -11,6 +11,8 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 - [`h003-recompute.md`](h003-recompute.md): recompute H003 in Python and compare every reported and daily value with Rust.
 - [`fetch-tiingo.md`](fetch-tiingo.md): download daily bars from Tiingo.
 
+- [`ib-probe.md`](ib-probe.md): validate arguments and fail safely without a TWS connection; live demo connection is human-run.
+
 ## Baseline preconditions
 
 - Run every command from the repository root.

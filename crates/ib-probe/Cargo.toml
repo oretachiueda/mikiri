@@ -1,0 +1,16 @@
+[package]
+name = "ib-probe"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nautilus-interactive-brokers = { version = "=0.68.0", default-features = false }
+ibapi = { version = "=5.0.0", default-features = false, features = ["async"] }
+futures = "0.3"
+tokio = { version = "1", features = ["rt", "time", "macros"] }
