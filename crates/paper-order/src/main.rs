@@ -1,3 +1,4 @@
+mod baseline;
 mod broker;
 mod cli;
 mod errors;
@@ -74,7 +75,13 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
             shared.disconnect().await;
             let snapshot = result?;
             let net = journal.net_shares("demo", "SPY")?;
-            return Ok((snapshot.status_line(net), 0));
+            let pnl = snapshot.daily_pnl(
+                &args.baseline,
+                OffsetDateTime::now_utc().date(),
+                &journal,
+                &raw_account,
+            );
+            return Ok((snapshot.status_line(net, pnl), 0));
         }
         broker::require_writable(&shared).await?;
         let mut session = OrderSession {
@@ -103,17 +110,21 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
                 .await
                 .map_err(|_| anyhow::anyhow!("node readiness timeout"))?;
                 let snapshot = broker::snapshot(&shared).await?;
-                let net = task_journal
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("journal lock unavailable"))?
-                    .net_shares("demo", "SPY")?;
-                let pnl = cli::gate(
-                    snapshot.position,
-                    net,
-                    snapshot.open_orders,
-                    snapshot.daily_pnl_usd,
-                )
-                .map_err(anyhow::Error::msg)?;
+                let (net, daily_pnl) = {
+                    let journal = task_journal
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("journal lock unavailable"))?;
+                    let net = journal.net_shares("demo", "SPY")?;
+                    let pnl = snapshot.daily_pnl(
+                        &args.baseline,
+                        OffsetDateTime::now_utc().date(),
+                        &journal,
+                        &task_account,
+                    );
+                    (net, pnl)
+                };
+                let pnl = cli::gate(snapshot.position, net, snapshot.open_orders, daily_pnl)
+                    .map_err(anyhow::Error::msg)?;
                 let (side, shares) = match args.command {
                     cli::Command::Buy(shares) => (Side::Buy, shares),
                     cli::Command::Sell(shares) => (Side::Sell, shares),

@@ -14,6 +14,7 @@ pub struct Args {
     pub command: Command,
     pub config: PathBuf,
     pub journal: PathBuf,
+    pub baseline: PathBuf,
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -24,14 +25,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     }
     let mut config = None;
     let mut journal = None;
+    let mut baseline = None;
     let mut shares = None;
     while let Some(option) = args.next() {
         match option.as_str() {
-            "--config" | "--journal" => {
-                let path = if option == "--config" {
-                    &mut config
-                } else {
-                    &mut journal
+            "--config" | "--journal" | "--baseline" => {
+                let path = match option.as_str() {
+                    "--config" => &mut config,
+                    "--journal" => &mut journal,
+                    _ => &mut baseline,
                 };
                 if path.is_some() {
                     return Err(format!("duplicate option: {option}"));
@@ -57,6 +59,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     }
     let config = config.ok_or("missing --config")?;
     let journal = journal.ok_or("missing --journal")?;
+    let baseline = baseline.ok_or("missing --baseline")?;
     let command = match (verb.as_str(), shares) {
         ("status", None) => Command::Status,
         ("status", Some(_)) => return Err("--shares is only valid for buy or sell".into()),
@@ -69,6 +72,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         command,
         config,
         journal,
+        baseline,
     })
 }
 
@@ -163,6 +167,8 @@ mod tests {
                     "cfg",
                     "--journal",
                     "jrnl",
+                    "--baseline",
+                    "base",
                     "--shares",
                     "2"
                 ]
@@ -171,7 +177,8 @@ mod tests {
             Ok(Args {
                 command: Command::Buy(2),
                 config: "cfg".into(),
-                journal: "jrnl".into()
+                journal: "jrnl".into(),
+                baseline: "base".into(),
             })
         );
         assert!(
@@ -182,6 +189,8 @@ mod tests {
                     "cfg",
                     "--journal",
                     "jrnl",
+                    "--baseline",
+                    "base",
                     "--shares",
                     "0"
                 ]
@@ -190,10 +199,19 @@ mod tests {
             .is_err()
         );
         assert!(
-            parse(["buy", "--config", "cfg", "--journal", "jrnl"].map(str::to_string)).is_err()
-        );
-        assert!(
-            parse(["status", "--config", "cfg", "--journal", "jrnl"].map(str::to_string)).is_ok()
+            parse(
+                [
+                    "buy",
+                    "--config",
+                    "cfg",
+                    "--journal",
+                    "jrnl",
+                    "--baseline",
+                    "base"
+                ]
+                .map(str::to_string)
+            )
+            .is_err()
         );
         assert!(
             parse(
@@ -203,6 +221,45 @@ mod tests {
                     "cfg",
                     "--journal",
                     "jrnl",
+                    "--baseline",
+                    "base"
+                ]
+                .map(str::to_string)
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            parse(
+                [
+                    "sell",
+                    "--config",
+                    "cfg",
+                    "--journal",
+                    "jrnl",
+                    "--baseline",
+                    "base",
+                    "--shares",
+                    "3"
+                ]
+                .map(str::to_string)
+            ),
+            Ok(Args {
+                command: Command::Sell(3),
+                config: "cfg".into(),
+                journal: "jrnl".into(),
+                baseline: "base".into(),
+            })
+        );
+        assert!(
+            parse(
+                [
+                    "status",
+                    "--config",
+                    "cfg",
+                    "--journal",
+                    "jrnl",
+                    "--baseline",
+                    "base",
                     "--shares",
                     "1"
                 ]
@@ -213,8 +270,30 @@ mod tests {
         assert!(parse(["status"].map(str::to_string)).is_err());
         assert!(parse(["status", "--config", "cfg"].map(str::to_string)).is_err());
         assert!(
+            parse(["status", "--config", "cfg", "--journal", "j"].map(str::to_string)).is_err()
+        );
+        assert!(
+            parse(["buy", "--config", "c", "--journal", "j", "--shares", "1"].map(str::to_string))
+                .is_err()
+        );
+        assert!(
+            parse(["sell", "--config", "c", "--journal", "j", "--shares", "1"].map(str::to_string))
+                .is_err()
+        );
+        assert!(
             parse(
-                ["status", "--config", "a", "--config", "b", "--journal", "j"].map(str::to_string)
+                [
+                    "status",
+                    "--config",
+                    "a",
+                    "--config",
+                    "b",
+                    "--journal",
+                    "j",
+                    "--baseline",
+                    "b"
+                ]
+                .map(str::to_string)
             )
             .is_err()
         );
@@ -229,13 +308,43 @@ mod tests {
                     "--journal",
                     "b"
                 ]
+                .into_iter()
+                .chain(["--baseline", "b"])
                 .map(str::to_string)
             )
             .is_err()
         );
         assert!(
             parse(
-                ["status", "--config", "c", "--journal", "j", "--other", "x"].map(str::to_string)
+                [
+                    "status",
+                    "--config",
+                    "c",
+                    "--journal",
+                    "j",
+                    "--baseline",
+                    "b",
+                    "--other",
+                    "x"
+                ]
+                .map(str::to_string)
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                [
+                    "status",
+                    "--config",
+                    "c",
+                    "--journal",
+                    "j",
+                    "--baseline",
+                    "a",
+                    "--baseline",
+                    "b"
+                ]
+                .map(str::to_string)
             )
             .is_err()
         );

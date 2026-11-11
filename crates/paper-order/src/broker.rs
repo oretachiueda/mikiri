@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, path::Path, time::Duration};
 
 use anyhow::{Context, ensure};
 use futures::StreamExt;
@@ -31,14 +31,35 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct Snapshot {
     pub position: i64,
     pub open_orders: usize,
-    pub daily_pnl_usd: Option<f64>,
+    pub current_equity_usd: anyhow::Result<f64>,
 }
 
 impl Snapshot {
-    pub fn status_line(&self, journal_net: i64) -> String {
-        let pnl = self
-            .daily_pnl_usd
-            .map_or_else(|| "unknown".into(), |value| format!("{value:.2}"));
+    pub fn daily_pnl(
+        &self,
+        path: &Path,
+        today: time::Date,
+        journal: &guard::Journal,
+        account: &str,
+    ) -> Option<f64> {
+        let result = match &self.current_equity_usd {
+            Ok(equity) => crate::baseline::pnl(path, today, *equity, journal),
+            Err(error) => Err(anyhow::anyhow!("{error:#}")),
+        };
+        match result {
+            Ok(pnl) => Some(pnl),
+            Err(error) => {
+                eprintln!(
+                    "{}",
+                    crate::errors::mask(&format!("{error:#}"), Some(account))
+                );
+                None
+            }
+        }
+    }
+
+    pub fn status_line(&self, journal_net: i64, daily_pnl_usd: Option<f64>) -> String {
+        let pnl = daily_pnl_usd.map_or_else(|| "unknown".into(), |value| format!("{value:.2}"));
         format!(
             "status account=paper position={} journal_net={journal_net} open_orders={} match={} daily_pnl_usd={pnl}",
             self.position,
@@ -130,11 +151,11 @@ pub async fn snapshot(shared: &SharedClientHandle) -> anyhow::Result<Snapshot> {
     let account = crate::cli::paper_account(&accounts).map_err(anyhow::Error::msg)?;
     let position = read_position(shared, account).await?;
     let open_orders = read_open_orders(shared, account).await?;
-    let daily_pnl_usd = pnl_or_unknown(read_daily_pnl(shared, account).await);
+    let current_equity_usd = read_current_equity(shared, account).await;
     Ok(Snapshot {
         position,
         open_orders,
-        daily_pnl_usd,
+        current_equity_usd,
     })
 }
 
@@ -197,25 +218,19 @@ async fn read_open_orders(shared: &SharedClientHandle, account: &str) -> anyhow:
     .map_err(|_| anyhow::anyhow!("timed out reading open orders"))?
 }
 
-fn pnl_or_unknown(result: anyhow::Result<Option<f64>>) -> Option<f64> {
-    result.ok().flatten().filter(|value| value.is_finite())
-}
-
 #[derive(Default)]
-struct EquityChange {
+struct CurrentEquity {
     current: Option<f64>,
-    previous: Option<f64>,
-    invalid: bool,
+    invalid: Option<&'static str>,
 }
 
-impl EquityChange {
+impl CurrentEquity {
     fn push(&mut self, row: &AccountSummary, account: &str) {
         if row.account != account {
             return;
         }
         let field = match row.tag.as_str() {
             AccountSummaryTags::EQUITY_WITH_LOAN_VALUE => &mut self.current,
-            AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE => &mut self.previous,
             _ => return,
         };
         let value = row
@@ -223,46 +238,49 @@ impl EquityChange {
             .parse::<f64>()
             .ok()
             .filter(|value| value.is_finite());
-        if field.is_some() || row.currency != "USD" || value.is_none() {
-            self.invalid = true;
+        if field.is_some() {
+            self.invalid.get_or_insert("current equity is duplicated");
+        }
+        if row.currency != "USD" {
+            self.invalid.get_or_insert("current equity is not USD");
+        }
+        if value.is_none() {
+            self.invalid
+                .get_or_insert("current equity is not finite numeric data");
         }
         *field = value;
     }
 
-    fn pnl(self) -> Option<f64> {
-        if self.invalid {
-            return None;
+    fn finish(self) -> anyhow::Result<f64> {
+        if let Some(reason) = self.invalid {
+            anyhow::bail!(reason);
         }
-        // shortcut: equity change includes deposits and withdrawals (a deposit can hide a loss); set KILL on transfer days, revisit before real trading
-        let change = self.current? - self.previous?;
-        change.is_finite().then_some(change)
+        self.current
+            .ok_or_else(|| anyhow::anyhow!("current equity is missing"))
     }
 }
 
-async fn read_daily_pnl(shared: &SharedClientHandle, account: &str) -> anyhow::Result<Option<f64>> {
+async fn read_current_equity(shared: &SharedClientHandle, account: &str) -> anyhow::Result<f64> {
     tokio::time::timeout(REQUEST_TIMEOUT, async {
         let mut summary = shared
             .account_summary(
                 &AccountGroup::from("All"),
-                &[
-                    AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
-                    AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
-                ],
+                &[AccountSummaryTags::EQUITY_WITH_LOAN_VALUE],
             )
             .await
-            .context("failed to request account equity summary")?
+            .map_err(|_| anyhow::anyhow!("failed to request account equity summary"))?
             .filter_data();
-        let mut equity = EquityChange::default();
+        let mut equity = CurrentEquity::default();
         while let Some(item) = summary.next().await {
-            match item.context("failed to read account equity summary")? {
+            match item.map_err(|_| anyhow::anyhow!("failed to read account equity summary"))? {
                 AccountSummaryResult::Summary(row) => equity.push(&row, account),
-                AccountSummaryResult::End => return Ok(equity.pnl()),
+                AccountSummaryResult::End => return equity.finish(),
             }
         }
         anyhow::bail!("account equity summary ended before snapshot completion")
     })
     .await
-    .map_err(|_| anyhow::anyhow!("timed out reading daily P&L"))?
+    .map_err(|_| anyhow::anyhow!("timed out reading current equity"))?
 }
 
 fn position_row_shares(
@@ -323,142 +341,76 @@ fn shares_from_f64(position: f64) -> anyhow::Result<i64> {
 mod tests {
     use super::*;
 
-    fn equity_row(tag: &str, value: &str, currency: &str, account: &str) -> AccountSummary {
+    fn equity_row(value: &str, currency: &str, account: &str) -> AccountSummary {
         AccountSummary {
             account: account.into(),
-            tag: tag.into(),
+            tag: AccountSummaryTags::EQUITY_WITH_LOAN_VALUE.into(),
             value: value.into(),
             currency: currency.into(),
         }
     }
 
-    fn equity_pnl(rows: &[AccountSummary]) -> Option<f64> {
-        let mut equity = EquityChange::default();
-        for row in rows {
-            equity.push(row, "DU123");
+    #[test]
+    fn current_equity_requires_unique_finite_usd_data_for_verified_account() {
+        let mut equity = CurrentEquity::default();
+        equity.push(&equity_row("100", "USD", "DU123"), "DU123");
+        equity.push(&equity_row("200", "USD", "DU999"), "DU123");
+        assert_eq!(equity.finish().unwrap(), 100.0);
+        for rows in [
+            vec![],
+            vec![equity_row("100", "USD", "DU999")],
+            vec![equity_row("100", "USD", "")],
+            vec![
+                equity_row("100", "USD", "DU123"),
+                equity_row("100", "USD", "DU123"),
+            ],
+            vec![equity_row("100", "JPY", "DU123")],
+            vec![equity_row("100", "", "DU123")],
+            vec![equity_row("NaN", "USD", "DU123")],
+            vec![equity_row("inf", "USD", "DU123")],
+            vec![equity_row("invalid", "USD", "DU123")],
+        ] {
+            let mut equity = CurrentEquity::default();
+            for row in rows {
+                equity.push(&row, "DU123");
+            }
+            assert!(equity.finish().is_err());
         }
-        equity.pnl()
     }
 
     #[test]
-    fn equity_summary_requires_both_unique_finite_usd_tags_for_verified_account() {
-        let current = || {
-            equity_row(
-                AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
-                "90",
-                "USD",
-                "DU123",
-            )
-        };
-        let previous = || {
-            equity_row(
-                AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
-                "100",
-                "USD",
-                "DU123",
-            )
-        };
-        assert_eq!(equity_pnl(&[current(), previous()]), Some(-10.0));
-        assert_eq!(equity_pnl(&[previous(), current()]), Some(-10.0));
-        assert_eq!(equity_pnl(&[]), None);
-        assert_eq!(equity_pnl(&[current()]), None);
-        assert_eq!(equity_pnl(&[previous()]), None);
-        assert_eq!(equity_pnl(&[current(), current(), previous()]), None);
-        assert_eq!(equity_pnl(&[current(), previous(), previous()]), None);
-        for tag in [
-            AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
-            AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
+    fn invalid_or_missing_current_equity_never_creates_baseline_and_blocks_orders() {
+        let directory =
+            std::env::temp_dir().join(format!("mikiri-equity-{}", nautilus_core::UUID4::new()));
+        std::fs::create_dir(&directory).unwrap();
+        let journal = guard::Journal::open(directory.join("journal")).unwrap();
+        for reason in [
+            "current equity is missing",
+            "current equity is duplicated",
+            "current equity is not USD",
+            "current equity is not finite numeric data",
         ] {
-            for value in ["NaN", "inf", "-inf", "invalid"] {
-                let bad = equity_row(tag, value, "USD", "DU123");
-                assert_eq!(equity_pnl(&[current(), previous(), bad]), None);
-                let good = if tag == AccountSummaryTags::EQUITY_WITH_LOAN_VALUE {
-                    previous()
-                } else {
-                    current()
-                };
-                assert_eq!(
-                    equity_pnl(&[good, equity_row(tag, value, "USD", "DU123")]),
-                    None
-                );
-            }
-            for currency in ["JPY", "", "usd"] {
-                let good = if tag == AccountSummaryTags::EQUITY_WITH_LOAN_VALUE {
-                    previous()
-                } else {
-                    current()
-                };
-                assert_eq!(
-                    equity_pnl(&[good, equity_row(tag, "100", currency, "DU123")]),
-                    None
-                );
-            }
-        }
-        let other_current = || {
-            equity_row(
-                AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
-                "100",
-                "USD",
-                "DU999",
-            )
-        };
-        let other_previous = || {
-            equity_row(
-                AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
-                "90",
-                "USD",
-                "DU999",
-            )
-        };
-        assert_eq!(equity_pnl(&[other_current(), other_previous()]), None);
-        assert_eq!(equity_pnl(&[current(), other_previous()]), None);
-        assert_eq!(equity_pnl(&[other_current(), previous()]), None);
-        assert_eq!(
-            equity_pnl(&[current(), previous(), other_previous()]),
-            Some(-10.0)
-        );
-        assert_eq!(
-            equity_pnl(&[
-                equity_row(
-                    AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
-                    "1.7976931348623157e308",
-                    "USD",
-                    "DU123"
-                ),
-                equity_row(
-                    AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
-                    "-1.7976931348623157e308",
-                    "USD",
-                    "DU123"
-                ),
-            ]),
-            None
-        );
-    }
-
-    #[test]
-    fn missing_or_failed_pnl_is_unknown_and_still_blocks_orders() {
-        for result in [
-            Err(anyhow::anyhow!("timed out reading daily P&L")),
-            Err(anyhow::anyhow!("account equity summary failed")),
-            Ok(None),
-            Ok(Some(f64::NAN)),
-            Ok(Some(f64::INFINITY)),
-        ] {
-            let pnl = pnl_or_unknown(result);
-            assert_eq!(pnl, None);
             let snapshot = Snapshot {
                 position: 0,
                 open_orders: 0,
-                daily_pnl_usd: pnl,
+                current_equity_usd: Err(anyhow::anyhow!(reason)),
             };
+            let pnl = snapshot.daily_pnl(
+                &directory.join("baseline"),
+                time::macros::date!(2026 - 11 - 12),
+                &journal,
+                "DU123",
+            );
+            assert!(pnl.is_none());
+            assert!(!directory.join("baseline").exists());
+            assert!(crate::cli::gate(0, 0, 0, pnl).is_err());
             assert_eq!(
-                snapshot.status_line(0),
+                snapshot.status_line(0, pnl),
                 "status account=paper position=0 journal_net=0 open_orders=0 match=true daily_pnl_usd=unknown"
             );
-            assert!(crate::cli::gate(0, 0, 0, pnl).is_err());
         }
-        assert_eq!(pnl_or_unknown(Ok(Some(-50.0))), Some(-50.0));
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

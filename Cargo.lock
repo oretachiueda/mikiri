@@ -2030,6 +2030,8 @@ dependencies = [
  "nautilus-model",
  "nautilus-trading",
  "proptest",
+ "serde",
+ "serde_json",
  "time",
  "tokio",
 ]
