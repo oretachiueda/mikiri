@@ -4,8 +4,8 @@ use anyhow::{Context, ensure};
 use futures::StreamExt;
 use ibapi::{
     accounts::{
-        AccountSummaryResult, PositionUpdate,
-        types::{AccountGroup, AccountId},
+        AccountSummary, AccountSummaryResult, AccountSummaryTags, PositionUpdate,
+        types::AccountGroup,
     },
     contracts::SecurityType,
     orders::Orders,
@@ -201,48 +201,65 @@ fn pnl_or_unknown(result: anyhow::Result<Option<f64>>) -> Option<f64> {
     result.ok().flatten().filter(|value| value.is_finite())
 }
 
+#[derive(Default)]
+struct EquityChange {
+    current: Option<f64>,
+    previous: Option<f64>,
+    invalid: bool,
+}
+
+impl EquityChange {
+    fn push(&mut self, row: &AccountSummary, account: &str) {
+        if row.account != account {
+            return;
+        }
+        let field = match row.tag.as_str() {
+            AccountSummaryTags::EQUITY_WITH_LOAN_VALUE => &mut self.current,
+            AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE => &mut self.previous,
+            _ => return,
+        };
+        let value = row
+            .value
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite());
+        if field.is_some() || row.currency != "USD" || value.is_none() {
+            self.invalid = true;
+        }
+        *field = value;
+    }
+
+    fn pnl(self) -> Option<f64> {
+        if self.invalid {
+            return None;
+        }
+        // shortcut: equity change includes deposits and withdrawals (a deposit can hide a loss); set KILL on transfer days, revisit before real trading
+        let change = self.current? - self.previous?;
+        change.is_finite().then_some(change)
+    }
+}
+
 async fn read_daily_pnl(shared: &SharedClientHandle, account: &str) -> anyhow::Result<Option<f64>> {
     tokio::time::timeout(REQUEST_TIMEOUT, async {
         let mut summary = shared
             .account_summary(
                 &AccountGroup::from("All"),
-                &[ibapi::accounts::AccountSummaryTags::NET_LIQUIDATION],
+                &[
+                    AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
+                    AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
+                ],
             )
             .await
-            .context("failed to verify account currency")?
+            .context("failed to request account equity summary")?
             .filter_data();
-        let mut usd_base = false;
-        let mut matching_rows = 0;
+        let mut equity = EquityChange::default();
         while let Some(item) = summary.next().await {
-            match item.context("failed to read account currency")? {
-                AccountSummaryResult::Summary(row)
-                    if row.account == account
-                        && row.tag == ibapi::accounts::AccountSummaryTags::NET_LIQUIDATION =>
-                {
-                    matching_rows += 1;
-                    usd_base = row.currency == "USD";
-                }
-                AccountSummaryResult::Summary(_) => {}
-                AccountSummaryResult::End => break,
+            match item.context("failed to read account equity summary")? {
+                AccountSummaryResult::Summary(row) => equity.push(&row, account),
+                AccountSummaryResult::End => return Ok(equity.pnl()),
             }
         }
-        if matching_rows != 1 || !usd_base {
-            return Ok(None);
-        }
-
-        let mut pnl = shared
-            .pnl(&AccountId::from(account), None)
-            .await
-            .context("failed to subscribe to daily P&L")?
-            .filter_data();
-        let value = pnl
-            .next()
-            .await
-            .transpose()
-            .context("failed to read daily P&L")?;
-        Ok(value
-            .map(|value| value.daily_pnl)
-            .filter(|value| value.is_finite()))
+        anyhow::bail!("account equity summary ended before snapshot completion")
     })
     .await
     .map_err(|_| anyhow::anyhow!("timed out reading daily P&L"))?
@@ -306,11 +323,124 @@ fn shares_from_f64(position: f64) -> anyhow::Result<i64> {
 mod tests {
     use super::*;
 
+    fn equity_row(tag: &str, value: &str, currency: &str, account: &str) -> AccountSummary {
+        AccountSummary {
+            account: account.into(),
+            tag: tag.into(),
+            value: value.into(),
+            currency: currency.into(),
+        }
+    }
+
+    fn equity_pnl(rows: &[AccountSummary]) -> Option<f64> {
+        let mut equity = EquityChange::default();
+        for row in rows {
+            equity.push(row, "DU123");
+        }
+        equity.pnl()
+    }
+
+    #[test]
+    fn equity_summary_requires_both_unique_finite_usd_tags_for_verified_account() {
+        let current = || {
+            equity_row(
+                AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
+                "90",
+                "USD",
+                "DU123",
+            )
+        };
+        let previous = || {
+            equity_row(
+                AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
+                "100",
+                "USD",
+                "DU123",
+            )
+        };
+        assert_eq!(equity_pnl(&[current(), previous()]), Some(-10.0));
+        assert_eq!(equity_pnl(&[previous(), current()]), Some(-10.0));
+        assert_eq!(equity_pnl(&[]), None);
+        assert_eq!(equity_pnl(&[current()]), None);
+        assert_eq!(equity_pnl(&[previous()]), None);
+        assert_eq!(equity_pnl(&[current(), current(), previous()]), None);
+        assert_eq!(equity_pnl(&[current(), previous(), previous()]), None);
+        for tag in [
+            AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
+            AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
+        ] {
+            for value in ["NaN", "inf", "-inf", "invalid"] {
+                let bad = equity_row(tag, value, "USD", "DU123");
+                assert_eq!(equity_pnl(&[current(), previous(), bad]), None);
+                let good = if tag == AccountSummaryTags::EQUITY_WITH_LOAN_VALUE {
+                    previous()
+                } else {
+                    current()
+                };
+                assert_eq!(
+                    equity_pnl(&[good, equity_row(tag, value, "USD", "DU123")]),
+                    None
+                );
+            }
+            for currency in ["JPY", "", "usd"] {
+                let good = if tag == AccountSummaryTags::EQUITY_WITH_LOAN_VALUE {
+                    previous()
+                } else {
+                    current()
+                };
+                assert_eq!(
+                    equity_pnl(&[good, equity_row(tag, "100", currency, "DU123")]),
+                    None
+                );
+            }
+        }
+        let other_current = || {
+            equity_row(
+                AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
+                "100",
+                "USD",
+                "DU999",
+            )
+        };
+        let other_previous = || {
+            equity_row(
+                AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
+                "90",
+                "USD",
+                "DU999",
+            )
+        };
+        assert_eq!(equity_pnl(&[other_current(), other_previous()]), None);
+        assert_eq!(equity_pnl(&[current(), other_previous()]), None);
+        assert_eq!(equity_pnl(&[other_current(), previous()]), None);
+        assert_eq!(
+            equity_pnl(&[current(), previous(), other_previous()]),
+            Some(-10.0)
+        );
+        assert_eq!(
+            equity_pnl(&[
+                equity_row(
+                    AccountSummaryTags::EQUITY_WITH_LOAN_VALUE,
+                    "1.7976931348623157e308",
+                    "USD",
+                    "DU123"
+                ),
+                equity_row(
+                    AccountSummaryTags::PREVIOUS_EQUITY_WITH_LOAN_VALUE,
+                    "-1.7976931348623157e308",
+                    "USD",
+                    "DU123"
+                ),
+            ]),
+            None
+        );
+    }
+
     #[test]
     fn missing_or_failed_pnl_is_unknown_and_still_blocks_orders() {
         for result in [
             Err(anyhow::anyhow!("timed out reading daily P&L")),
-            Err(anyhow::anyhow!("daily P&L subscription failed")),
+            Err(anyhow::anyhow!("account equity summary failed")),
             Ok(None),
             Ok(Some(f64::NAN)),
             Ok(Some(f64::INFINITY)),
