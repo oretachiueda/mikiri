@@ -16,6 +16,12 @@ private = { ignore = true }
 # Compile-time only, via const-random-macro under parquet and arrow.
 exceptions = [
     { allow = ["CC0-1.0"], crate = "tiny-keccak" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-analysis" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-data" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-portfolio" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-risk" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-system" },
+    { allow = ["LGPL-3.0-only"], crate = "nautilus-trading" },
     { allow = ["LGPL-3.0-only"], crate = "nautilus-common" },
     { allow = ["LGPL-3.0-only"], crate = "nautilus-core" },
     { allow = ["LGPL-3.0-only"], crate = "nautilus-cryptography" },

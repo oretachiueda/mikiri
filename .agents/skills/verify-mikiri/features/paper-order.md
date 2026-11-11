@@ -1,0 +1,51 @@
+# Guarded demo orders
+
+`paper-order` reconciles the SPY demo position before recording and submitting one market DAY order through Nautilus. `status` only reads broker state. The connection is fixed to 127.0.0.1:7497, client ID 8 (the probe uses 7), strategy `demo`, symbol `SPY`.
+
+## Sub-features
+
+- Required `--config` and `--journal`; buy and sell also require positive integer `--shares`.
+- Missing, invalid, expired, or killed limits stop before connection.
+- Orders require New York weekdays 09:35–15:55, one D-prefixed managed account, matching journal position, no open SPY order, and known finite USD daily P&L.
+- Durable journal keys prevent same-day duplicate intents. Rejected and pending keys remain used.
+- Timeout never cancels or resubmits. Shutdown never closes a position.
+
+## How to get to it (user POV)
+
+Build with `cargo build --locked -p paper-order`. Use temporary synthetic config and journal paths outside the repository for offline verification. A real connection is human-run; this skill never connects to TWS.
+
+## Driving it with the shell
+
+```bash
+target/debug/paper-order status
+```
+
+Expected: exit 1, stdout `refused: missing --config`, empty stderr; no files written.
+
+```bash
+python3 - <<'PYCODE'
+from pathlib import Path
+import subprocess
+import tempfile
+with tempfile.TemporaryDirectory(prefix="mikiri-paper-offline-") as tmp:
+    root = Path(tmp)
+    config, journal = root / "limits.toml", root / "journal.jsonl"
+    command = ["target/debug/paper-order", "status", "--config", str(config), "--journal", str(journal)]
+    for expected in ["refused: config file is missing", "refused: kill switch exists", "refused: config has expired"]:
+        if "kill" in expected:
+            (root / "KILL").touch()
+        elif "expired" in expected:
+            (root / "KILL").unlink()
+            config.write_text('expires_on = "2000-01-01"\nsymbols = ["SPY"]\nmax_position_shares = 1\nmax_daily_orders = 4\nmax_daily_loss_usd = 50.0\n')
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        print(f"exit={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}")
+        assert result.returncode == 1 and result.stdout.strip() == expected and not result.stderr
+        assert not journal.exists()
+PYCODE
+```
+
+The recipe exits 0 only if all failures occur before journal creation. Keep the output and exit codes as evidence. Market-hours refusal can be driven with a valid temporary config and a buy command only when the current New York time is outside the window; otherwise skip that real CLI path and record why. Never force a clock or connect during a skill run.
+
+## Gotchas
+
+Never drive buy or sell against TWS from this skill. Account IDs and balances must never appear in output or wire recordings. Exchange holidays are not modeled: a holiday order may remain pending until timeout. An empty journal does not prove a flat broker position; `status` reports the comparison. A recorded intent is not a fill: a mismatch after rejection or partial fill needs human reconciliation. Simulated trading does not authorize a real account.

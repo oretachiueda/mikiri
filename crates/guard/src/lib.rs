@@ -268,6 +268,8 @@ pub enum JournalError {
     Corrupt,
     #[error("order key was already recorded")]
     Duplicate,
+    #[error("journal position arithmetic overflow")]
+    Overflow,
     #[error("journal write failed earlier; reopen and inspect before retrying")]
     Poisoned,
 }
@@ -326,6 +328,20 @@ impl Journal {
 
     pub fn orders_on(&self, day: Date) -> u64 {
         self.records.iter().filter(|r| r.intent.day == day).count() as u64
+    }
+
+    pub fn net_shares(&self, strategy: &str, symbol: &str) -> Result<i64, JournalError> {
+        self.records
+            .iter()
+            .filter(|r| r.intent.strategy == strategy && r.intent.symbol == symbol)
+            .try_fold(0_i64, |net, r| {
+                let shares = i64::from(r.intent.shares);
+                match r.intent.side {
+                    Side::Buy => net.checked_add(shares),
+                    Side::Sell => net.checked_sub(shares),
+                }
+                .ok_or(JournalError::Overflow)
+            })
     }
 
     pub fn record(&mut self, approved: Approved) -> Result<Recorded, JournalError> {
