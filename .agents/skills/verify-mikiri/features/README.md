@@ -7,6 +7,8 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 - [`h001-compute.md`](h001-compute.md): compute the H001 cycles and summary from daily bars.
 - [`h001-recompute.md`](h001-recompute.md): recompute H001 in Python and compare it with Rust.
 - [`h002-screen.md`](h002-screen.md): compute the H002 monthly screen in Rust and compare it with Python.
+- [`h003-compute.md`](h003-compute.md): compute the H003 leveraged-trend strategy and summary from Tiingo-format daily bars.
+- [`h003-recompute.md`](h003-recompute.md): recompute H003 in Python and compare every reported and daily value with Rust.
 - [`fetch-tiingo.md`](fetch-tiingo.md): download daily bars from Tiingo.
 
 ## Baseline preconditions
