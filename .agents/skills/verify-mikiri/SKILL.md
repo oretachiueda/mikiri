@@ -1,11 +1,11 @@
 ---
 name: verify-mikiri
-description: Drive Mikiri's command-line tools (h001-compute, stats/h001.py, fetch-tiingo) on synthetic bars and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
+description: Drive Mikiri's command-line tools (h001-compute, h002-compute, stats/h001.py, stats/h002.py, fetch-tiingo) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
 ---
 
 # Verify Mikiri
 
-Mikiri has no server and no UI. A user runs two Rust binaries and one Python batch from the repository root. This skill drives them on synthetic bars and keeps the output as proof.
+Mikiri has no server and no UI. This skill drives the command-line tools on synthetic inputs and keeps the output as proof.
 
 This is the repository's only verification skill. Extend it when a feature changes. Do not create another one. The static checks are in `AGENTS.md` §7 and are not repeated here.
 
@@ -19,12 +19,12 @@ Nothing stays running. Launch is one build from the repository root.
 cargo build --locked -p mikiri --bins
 ```
 
-The binaries are `target/debug/h001-compute` and `target/debug/fetch-tiingo`. The Python batch needs no build. `uv run --locked --project stats` creates its environment on first use.
+The binaries are `target/debug/h001-compute`, `target/debug/h002-compute`, and `target/debug/fetch-tiingo`. The Python batches need no build. `uv run --locked --project stats` creates its environment on first use.
 
 ## Doctor
 
 ```bash
-command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
+command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/h002-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
 ```
 
 `doctor-ok` means that the tools exist, the binaries are built, and git ignores the directories that a drive writes to. If the line prints nothing, fix that before you drive.
@@ -36,6 +36,8 @@ command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git ch
 ```
 
 The script makes synthetic weekday bars from 2005-11-01 to 2026-10-30, runs `h001-compute` on them, then runs `stats/h001.py` on the result. It passes only when the summary has 250 main cycles, 120 recent cycles, and 1 reference cycle, and the Python recompute matches Rust with no mismatch. The last line is `PASS evidence=<directory>` or `FAIL evidence=<directory>`.
+
+Run `.agents/skills/verify-mikiri/drive-h002.sh` to verify both H002 commands on synthetic monthly portfolios and keep proof in `/tmp/mikiri-verify-h002-<id>/`.
 
 Error paths and the other entry points are in `features/`. Each recipe there is a literal command with its expected output.
 

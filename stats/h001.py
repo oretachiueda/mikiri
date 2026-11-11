@@ -209,11 +209,31 @@ def compare(
     return differences
 
 
-def run(directory: Path) -> tuple[Path, str, bool]:
+def checked_run_directory(directory: Path) -> Path:
     directory = directory.resolve(strict=True)
     results = Path(__file__).resolve().parents[1] / "results"
     if not directory.is_relative_to(results) or directory == results:
         raise ValueError("run directory must be under repository results/")
+    return directory
+
+
+def write_verdict(directory: Path, verdict: dict) -> tuple[Path, str]:
+    payload = (json.dumps(verdict, indent=2, allow_nan=False) + "\n").encode()
+    target = directory / "verdict.json"
+    scratch = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temp:
+            scratch = Path(temp.name)
+            temp.write(payload)
+        scratch.replace(target)
+    finally:
+        if scratch is not None:
+            scratch.unlink(missing_ok=True)
+    return target, hashlib.sha256(payload).hexdigest()
+
+
+def run(directory: Path) -> tuple[Path, str, bool]:
+    directory = checked_run_directory(directory)
     calculated, summary = compute(read_bars(directory / "bars.parquet"))
     rust_summary = json.loads((directory / "summary.json").read_text())
     rust_cycles = pd.read_parquet(directory / "cycles.parquet").to_dict(
@@ -226,18 +246,8 @@ def run(directory: Path) -> tuple[Path, str, bool]:
         "match": not differences,
         "mismatches": differences,
     }
-    payload = (json.dumps(verdict, indent=2, allow_nan=False) + "\n").encode()
-    target = directory / "verdict.json"
-    scratch = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temp:
-            scratch = Path(temp.name)
-            temp.write(payload)
-        scratch.replace(target)
-    finally:
-        if scratch is not None:
-            scratch.unlink(missing_ok=True)
-    return target, hashlib.sha256(payload).hexdigest(), not differences
+    path, digest = write_verdict(directory, verdict)
+    return path, digest, not differences
 
 
 def main() -> int:

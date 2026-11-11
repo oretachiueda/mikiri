@@ -152,7 +152,7 @@ pub fn cycles(bars: &[DailyBar], cost: f64) -> Result<Vec<Cycle>> {
     }
     Ok(result)
 }
-fn mean(values: &[f64]) -> Result<f64> {
+pub(crate) fn mean(values: &[f64]) -> Result<f64> {
     if values.is_empty() {
         return Err("empty sample".into());
     }
@@ -230,7 +230,7 @@ pub fn compute(bars: &[DailyBar]) -> Result<(Vec<Cycle>, Summary)> {
     };
     Ok((cycles, summary))
 }
-fn write_batch(path: &Path, columns: Vec<(&str, ArrayRef)>) -> Result<()> {
+pub(crate) fn write_batch(path: &Path, columns: Vec<(&str, ArrayRef)>) -> Result<()> {
     let fields: Vec<_> = columns
         .iter()
         .map(|(name, a)| Field::new(*name, a.data_type().clone(), false))
@@ -245,7 +245,7 @@ fn write_batch(path: &Path, columns: Vec<(&str, ArrayRef)>) -> Result<()> {
     writer.close()?;
     Ok(())
 }
-fn dates(values: impl Iterator<Item = Date>) -> Result<ArrayRef> {
+pub(crate) fn dates(values: impl Iterator<Item = Date>) -> Result<ArrayRef> {
     let epoch = date(1970, Month::January, 1)?.to_julian_day();
     Ok(Arc::new(Date32Array::from(
         values
@@ -253,7 +253,7 @@ fn dates(values: impl Iterator<Item = Date>) -> Result<ArrayRef> {
             .collect::<Vec<_>>(),
     )))
 }
-fn floats(values: impl Iterator<Item = f64>) -> ArrayRef {
+pub(crate) fn floats(values: impl Iterator<Item = f64>) -> ArrayRef {
     Arc::new(Float64Array::from(values.collect::<Vec<_>>()))
 }
 fn write_cycles(cycles: &[Cycle], path: &Path) -> Result<()> {
@@ -391,12 +391,7 @@ fn output_temp_dir(out: &Path) -> std::path::PathBuf {
     ))
 }
 
-pub fn write_outputs(
-    bars: &[DailyBar],
-    cycles: &[Cycle],
-    summary: &Summary,
-    out: &Path,
-) -> Result<String> {
+pub(crate) fn publish_outputs(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     checked_output_path(out)?;
     if out.exists() {
         return Err("output directory already exists".into());
@@ -409,34 +404,40 @@ pub fn write_outputs(
         return Err("output directory already exists".into());
     }
     fs::create_dir(&tmp)?;
-    let scratch = OutputScratch {
+    let mut scratch = OutputScratch {
         path: tmp.clone(),
         complete: false,
     };
-    let write_result = write_output_files(bars, cycles, summary, &tmp);
-    if write_result.is_err() {
-        return write_result.map(|_| String::new());
-    }
+    write(&tmp)?;
     fs::rename(&tmp, out)?;
-    std::mem::forget(scratch);
-    let paths = [
-        out.join("bars.parquet"),
-        out.join("cycles.parquet"),
-        out.join("summary.json"),
-    ];
+    scratch.complete = true;
+    Ok(())
+}
+
+pub(crate) fn output_hashes(out: &Path, names: &[&str]) -> Result<String> {
     let mut report = Vec::new();
-    for path in &paths {
+    for name in names {
+        let path = out.join(name);
         report.push(format!(
             "{} sha256={:x}",
             path.display(),
-            Sha256::digest(fs::read(path)?)
+            Sha256::digest(fs::read(&path)?)
         ));
     }
+    Ok(report.join(" "))
+}
+
+pub fn write_outputs(
+    bars: &[DailyBar],
+    cycles: &[Cycle],
+    summary: &Summary,
+    out: &Path,
+) -> Result<String> {
+    publish_outputs(out, |tmp| write_output_files(bars, cycles, summary, tmp))?;
+    let report = output_hashes(out, &["bars.parquet", "cycles.parquet", "summary.json"])?;
     Ok(format!(
         "{} main_n={} recent_n={}",
-        report.join(" "),
-        summary.main_n,
-        summary.recent_n
+        report, summary.main_n, summary.recent_n
     ))
 }
 #[cfg(test)]

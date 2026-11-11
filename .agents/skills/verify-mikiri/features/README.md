@@ -6,6 +6,7 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 
 - [`h001-compute.md`](h001-compute.md): compute the H001 cycles and summary from daily bars.
 - [`h001-recompute.md`](h001-recompute.md): recompute H001 in Python and compare it with Rust.
+- [`h002-screen.md`](h002-screen.md): compute the H002 monthly screen in Rust and compare it with Python.
 - [`fetch-tiingo.md`](fetch-tiingo.md): download daily bars from Tiingo.
 
 ## Baseline preconditions
@@ -17,7 +18,7 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 ## Driving conventions
 
 - Treat every command as literal.
-- Use synthetic bars only. Never read `data/`, `live/`, `secrets/`, `.env`, or a token file.
+- Use synthetic inputs only. Never read `data/`, `live/`, `secrets/`, `.env`, or a token file.
 - A failure recipe states the exact stderr line and exit code. A different message is a finding.
 
 ## Proof and skip reporting
