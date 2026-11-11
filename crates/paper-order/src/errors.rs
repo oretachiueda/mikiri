@@ -27,9 +27,16 @@ pub fn mask(text: &str, account: Option<&str>) -> String {
 pub fn refusal(error: &anyhow::Error, account: Option<&str>) -> (String, String) {
     let chain = format!("{error:#}");
     let stderr = mask(&chain, account);
-    let stdout = if chain.to_ascii_lowercase().contains("321")
-        && chain.to_ascii_lowercase().contains("read-only")
-    {
+    let order_id_preflight = error
+        .chain()
+        .any(|cause| cause.to_string() == "cannot initialize execution order IDs");
+    let readonly = order_id_preflight
+        && error.chain().any(|cause| {
+            cause.downcast_ref::<ibapi::Error>().is_some_and(
+                |error| matches!(error, ibapi::Error::Notice(notice) if notice.code == 321),
+            )
+        });
+    let stdout = if readonly {
         "refused: TWS API is read-only".to_owned()
     } else {
         let first = mask(&error.to_string(), account);
@@ -89,12 +96,40 @@ mod tests {
 
     #[test]
     fn read_only_321_has_stable_stdout_but_masked_chain_stderr() {
-        let error = anyhow::anyhow!("TWS returned error 321: API is READ-ONLY for D321");
+        let notice = ibapi::Notice {
+            request_id: None,
+            code: 321,
+            message: "The API interface is currently in Read-Only mode for D321.".into(),
+            error_time: None,
+            advanced_order_reject_json: String::new(),
+        };
+        let error = anyhow::Error::new(ibapi::Error::Notice(notice))
+            .context("cannot initialize execution order IDs");
         let (stdout, stderr) = refusal(&error, None);
         assert_eq!(stdout, "refused: TWS API is read-only");
-        assert_eq!(
-            stderr,
-            "TWS returned error 321: API is READ-ONLY for <account>"
-        );
+        assert!(stderr.contains("cannot initialize execution order IDs"));
+        assert!(stderr.contains("321"));
+        assert!(stderr.contains("<account>"));
+        assert!(!stderr.contains("D321"));
+    }
+
+    #[test]
+    fn validation_321_outside_order_id_preflight_is_not_read_only() {
+        let error = anyhow::Error::new(ibapi::Error::Notice(ibapi::Notice {
+            request_id: None,
+            code: 321,
+            message: "Invalid contract query".into(),
+            error_time: None,
+            advanced_order_reject_json: String::new(),
+        }))
+        .context("failed to read positions");
+        assert_eq!(refusal(&error, None).0, "refused: failed to read positions");
+    }
+
+    #[test]
+    fn unrelated_text_with_321_and_read_only_is_not_special_cased() {
+        let error = anyhow::anyhow!("unrelated 321 read-only diagnostic");
+        let (stdout, _) = refusal(&error, None);
+        assert_eq!(stdout, "refused: unrelated 321 read-only diagnostic");
     }
 }

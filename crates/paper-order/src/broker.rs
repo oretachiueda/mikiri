@@ -34,6 +34,20 @@ pub struct Snapshot {
     pub daily_pnl_usd: Option<f64>,
 }
 
+impl Snapshot {
+    pub fn status_line(&self, journal_net: i64) -> String {
+        let pnl = self
+            .daily_pnl_usd
+            .map_or_else(|| "unknown".into(), |value| format!("{value:.2}"));
+        format!(
+            "status account=paper position={} journal_net={journal_net} open_orders={} match={} daily_pnl_usd={pnl}",
+            self.position,
+            self.open_orders,
+            self.position == journal_net
+        )
+    }
+}
+
 pub async fn connect() -> anyhow::Result<(SharedClientHandle, String)> {
     let shared = shared_client::get_or_connect(HOST, PORT, CLIENT_ID, 10, Some(0))
         .await
@@ -116,7 +130,7 @@ pub async fn snapshot(shared: &SharedClientHandle) -> anyhow::Result<Snapshot> {
     let account = crate::cli::paper_account(&accounts).map_err(anyhow::Error::msg)?;
     let position = read_position(shared, account).await?;
     let open_orders = read_open_orders(shared, account).await?;
-    let daily_pnl_usd = read_daily_pnl(shared, account).await?;
+    let daily_pnl_usd = pnl_or_unknown(read_daily_pnl(shared, account).await);
     Ok(Snapshot {
         position,
         open_orders,
@@ -176,6 +190,10 @@ async fn read_open_orders(shared: &SharedClientHandle, account: &str) -> anyhow:
     })
     .await
     .map_err(|_| anyhow::anyhow!("timed out reading open orders"))?
+}
+
+fn pnl_or_unknown(result: anyhow::Result<Option<f64>>) -> Option<f64> {
+    result.ok().flatten().filter(|value| value.is_finite())
 }
 
 async fn read_daily_pnl(shared: &SharedClientHandle, account: &str) -> anyhow::Result<Option<f64>> {
@@ -239,6 +257,31 @@ fn shares_from_f64(position: f64) -> anyhow::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_or_failed_pnl_is_unknown_and_still_blocks_orders() {
+        for result in [
+            Err(anyhow::anyhow!("timed out reading daily P&L")),
+            Err(anyhow::anyhow!("daily P&L subscription failed")),
+            Ok(None),
+            Ok(Some(f64::NAN)),
+            Ok(Some(f64::INFINITY)),
+        ] {
+            let pnl = pnl_or_unknown(result);
+            assert_eq!(pnl, None);
+            let snapshot = Snapshot {
+                position: 0,
+                open_orders: 0,
+                daily_pnl_usd: pnl,
+            };
+            assert_eq!(
+                snapshot.status_line(0),
+                "status account=paper position=0 journal_net=0 open_orders=0 match=true daily_pnl_usd=unknown"
+            );
+            assert!(crate::cli::gate(0, 0, 0, pnl).is_err());
+        }
+        assert_eq!(pnl_or_unknown(Ok(Some(-50.0))), Some(-50.0));
+    }
 
     #[test]
     fn preload_ids_match_provider_symbology() {

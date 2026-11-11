@@ -10,6 +10,7 @@
 - Durable journal keys prevent same-day duplicate intents. Rejected and pending keys remain used.
 - Timeout never cancels or resubmits. Shutdown never closes a position.
 - Buy/sell use a LiveNode and require Read-Only API OFF. TWS error 321 reports `refused: TWS API is read-only`; status never requests order IDs.
+- Status prints `daily_pnl_usd=unknown` when P&L is unavailable, invalid, or times out. Position, journal, and open-order read failures still refuse. Buy/sell reject unknown P&L.
 - Errors keep one stdout line and print the full error chain on stderr with account identifiers masked.
 
 ## How to get to it (user POV)
@@ -50,4 +51,4 @@ The recipe exits 0 only if all failures occur before journal creation. Keep the 
 
 ## Gotchas
 
-Never drive buy or sell against TWS from this skill. The startup provider uses Raw symbology for `SPY=STK.SMART`; the default Simplified method resolves a different instrument ID. Account IDs and balances must never appear in output or wire recordings. Exchange holidays are not modeled: a holiday order may remain pending until timeout. An empty journal does not prove a flat broker position; `status` reports the comparison. A recorded intent is not a fill: a mismatch after rejection or partial fill needs human reconciliation. Simulated trading does not authorize a real account.
+Never drive buy or sell against TWS from this skill. The startup provider uses Raw symbology for `SPY=STK.SMART`; the default Simplified method resolves a different instrument ID. Account IDs and balances must never appear in output or wire recordings. Exchange holidays are not modeled: a holiday order may remain pending until timeout. An empty journal does not prove a flat broker position; `status` reports the comparison. The daily-P&L stream may not emit its first update within 20 seconds; status remains useful but orders fail closed. Account-summary equity change is not used as trading P&L because deposits, withdrawals, and non-trading valuation changes can affect it. A recorded intent is not a fill: a mismatch after rejection or partial fill needs human reconciliation. Simulated trading does not authorize a real account.

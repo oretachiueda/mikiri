@@ -48,8 +48,7 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
             shared.disconnect().await;
             let snapshot = result?;
             let net = journal.net_shares("demo", "SPY")?;
-            let pnl = snapshot.daily_pnl_usd.map_or_else(|| "unknown".into(), |v| format!("{v:.2}"));
-            return Ok((format!("status account=paper position={} journal_net={net} open_orders={} match={} daily_pnl_usd={pnl}", snapshot.position, snapshot.open_orders, snapshot.position == net), 0));
+            return Ok((snapshot.status_line(net), 0));
         }
         broker::require_writable(&shared).await?;
         let mut node = broker::build_node(&raw_account)?;
@@ -57,9 +56,9 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
         let result = Arc::new(Mutex::new(None));
         let (sender, receiver) = mpsc::channel();
         node.add_strategy(execution::DemoStrategy::new(
-                receiver,
-                Arc::clone(&result),
-                handle.clone(),
+            receiver,
+            Arc::clone(&result),
+            handle.clone(),
         )?)?;
         let task_result = Arc::clone(&result);
         let task = get_runtime().spawn(async move {
@@ -68,10 +67,18 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
                     while !handle.is_running() {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
-                }).await.map_err(|_| anyhow::anyhow!("node readiness timeout"))?;
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("node readiness timeout"))?;
                 let snapshot = broker::snapshot(&shared).await?;
                 let net = journal.net_shares("demo", "SPY")?;
-                let pnl = cli::gate(snapshot.position, net, snapshot.open_orders, snapshot.daily_pnl_usd).map_err(anyhow::Error::msg)?;
+                let pnl = cli::gate(
+                    snapshot.position,
+                    net,
+                    snapshot.open_orders,
+                    snapshot.daily_pnl_usd,
+                )
+                .map_err(anyhow::Error::msg)?;
                 let (side, shares) = match args.command {
                     cli::Command::Buy(shares) => (Side::Buy, shares),
                     cli::Command::Sell(shares) => (Side::Sell, shares),
@@ -81,22 +88,35 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
                 let limits = Limits::load(&args.config, current_day)?;
                 cli::market_hours(jiff::Timestamp::now()).map_err(anyhow::Error::msg)?;
                 let intent = Intent::new(current_day, "demo", "SPY", side, shares)?;
-                let approved = guard::check(&limits, &Account { position: snapshot.position, daily_pnl_usd: pnl }, journal.orders_on(current_day), &intent)?;
+                let approved = guard::check(
+                    &limits,
+                    &Account {
+                        position: snapshot.position,
+                        daily_pnl_usd: pnl,
+                    },
+                    journal.orders_on(current_day),
+                    &intent,
+                )?;
                 let mut journal = journal;
                 let recorded = journal.record(approved)?;
-                sender.send(recorded).map_err(|_| anyhow::anyhow!("order receiver unavailable"))?;
+                sender
+                    .send(recorded)
+                    .map_err(|_| anyhow::anyhow!("order receiver unavailable"))?;
                 // Keep the journal lock until shutdown, including the terminal-event wait.
                 while handle.is_running() {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 Ok::<(), anyhow::Error>(())
-            }.await;
+            }
+            .await;
             match work {
                 Ok(()) => (),
                 Err(error) => {
                     let (line, diagnostic) = errors::refusal(&error, Some(&raw_account));
                     eprintln!("{diagnostic}");
-                    if let Ok(mut slot) = task_result.lock() { *slot = Some((line, 1)); }
+                    if let Ok(mut slot) = task_result.lock() {
+                        *slot = Some((line, 1));
+                    }
                     handle.stop();
                 }
             }
@@ -105,7 +125,10 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
         node.dispose();
         task.abort();
         let _ = task.await;
-        let outcome = result.lock().map_err(|_| anyhow::anyhow!("result unavailable"))?.take();
+        let outcome = result
+            .lock()
+            .map_err(|_| anyhow::anyhow!("result unavailable"))?
+            .take();
         node_result?;
         outcome.ok_or_else(|| anyhow::anyhow!("node stopped without result"))
     })
