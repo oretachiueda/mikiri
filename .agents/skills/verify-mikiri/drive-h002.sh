@@ -41,7 +41,7 @@ schema = pa.schema([
     ("signalname", pa.large_string()), ("port", pa.large_string()),
     ("date", pa.date32()), ("ret", pa.float64()),
 ])
-pq.write_table(pa.Table.from_pylist(rows, schema=schema), sys.argv[1], compression=None)
+pq.write_table(pa.Table.from_pylist(rows, schema=schema), sys.argv[1], compression="zstd")
 PY
 
 sha256="$(shasum -a 256 "$evidence/ports.parquet" | cut -d ' ' -f 1)"
