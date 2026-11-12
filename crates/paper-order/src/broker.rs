@@ -238,8 +238,10 @@ impl CurrentEquity {
             .parse::<f64>()
             .ok()
             .filter(|value| value.is_finite());
-        if field.is_some() {
-            self.invalid.get_or_insert("current equity is duplicated");
+        if let (Some(first), Some(next)) = (*field, value)
+            && first.to_bits() != next.to_bits()
+        {
+            self.invalid.get_or_insert("current equity values disagree");
         }
         if row.currency != "USD" {
             self.invalid.get_or_insert("current equity is not USD");
@@ -248,7 +250,9 @@ impl CurrentEquity {
             self.invalid
                 .get_or_insert("current equity is not finite numeric data");
         }
-        *field = value;
+        if field.is_none() {
+            *field = value;
+        }
     }
 
     fn finish(self) -> anyhow::Result<f64> {
@@ -351,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn current_equity_requires_unique_finite_usd_data_for_verified_account() {
+    fn current_equity_requires_consistent_finite_usd_data_for_verified_account() {
         let mut equity = CurrentEquity::default();
         equity.push(&equity_row("100", "USD", "DU123"), "DU123");
         equity.push(&equity_row("200", "USD", "DU999"), "DU123");
@@ -362,7 +366,7 @@ mod tests {
             vec![equity_row("100", "USD", "")],
             vec![
                 equity_row("100", "USD", "DU123"),
-                equity_row("100", "USD", "DU123"),
+                equity_row("101", "USD", "DU123"),
             ],
             vec![equity_row("100", "JPY", "DU123")],
             vec![equity_row("100", "", "DU123")],
@@ -379,6 +383,45 @@ mod tests {
     }
 
     #[test]
+    fn single_and_bit_identical_equity_rows_are_accepted() {
+        for values in [
+            vec!["100"],
+            vec!["100", "100"],
+            vec!["100.0", "100.00", "1e2"],
+        ] {
+            let mut equity = CurrentEquity::default();
+            for value in values {
+                equity.push(&equity_row(value, "USD", "DU123"), "DU123");
+            }
+            assert_eq!(equity.finish().unwrap().to_bits(), 100.0_f64.to_bits());
+        }
+    }
+
+    #[test]
+    fn differing_equity_rows_stay_unknown_even_if_first_value_returns() {
+        for values in [
+            vec!["100", "101"],
+            vec!["100", "101", "100"],
+            vec!["0", "-0"],
+        ] {
+            let mut equity = CurrentEquity::default();
+            for value in values {
+                equity.push(&equity_row(value, "USD", "DU123"), "DU123");
+            }
+            assert_eq!(
+                equity.finish().unwrap_err().to_string(),
+                "current equity values disagree"
+            );
+        }
+        let adjacent = f64::from_bits(100.0_f64.to_bits() + 1).to_string();
+        let mut equity = CurrentEquity::default();
+        for value in ["100", adjacent.as_str()] {
+            equity.push(&equity_row(value, "USD", "DU123"), "DU123");
+        }
+        assert!(equity.finish().is_err());
+    }
+
+    #[test]
     fn invalid_or_missing_current_equity_never_creates_baseline_and_blocks_orders() {
         let directory =
             std::env::temp_dir().join(format!("mikiri-equity-{}", nautilus_core::UUID4::new()));
@@ -386,7 +429,7 @@ mod tests {
         let journal = guard::Journal::open(directory.join("journal")).unwrap();
         for reason in [
             "current equity is missing",
-            "current equity is duplicated",
+            "current equity values disagree",
             "current equity is not USD",
             "current equity is not finite numeric data",
         ] {
