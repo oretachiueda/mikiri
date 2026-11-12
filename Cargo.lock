@@ -1318,10 +1318,12 @@ dependencies = [
  "jiff-core",
  "jiff-static",
  "jiff-tzdb",
+ "jiff-tzdb-platform",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "windows-link",
 ]
 
 [[package]]
@@ -1350,6 +1352,15 @@ name = "jiff-tzdb"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
+]
 
 [[package]]
 name = "jni"
@@ -1522,6 +1533,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautilus-analysis"
+version = "0.68.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc1db58e80245694ad5e785cfae674eb7fcb96617e1e3530fc043b08c3818fa4"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "indexmap",
+ "log",
+ "nautilus-core",
+ "nautilus-model",
+ "rust_decimal",
+]
+
+[[package]]
 name = "nautilus-common"
 version = "0.68.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1595,6 +1621,29 @@ dependencies = [
  "pem",
  "rustls",
  "webpki-roots 1.0.12",
+]
+
+[[package]]
+name = "nautilus-data"
+version = "0.68.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e7c37b5439787fd4586e674254afee877078449df4c7d48f78ecb607d1aa8e"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "async-trait",
+ "bon",
+ "futures",
+ "indexmap",
+ "jiff",
+ "log",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-model",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "ustr",
 ]
 
 [[package]]
@@ -1672,9 +1721,14 @@ dependencies = [
  "log",
  "nautilus-common",
  "nautilus-core",
+ "nautilus-data",
  "nautilus-execution",
  "nautilus-model",
  "nautilus-network",
+ "nautilus-portfolio",
+ "nautilus-risk",
+ "nautilus-system",
+ "nautilus-trading",
  "parking_lot 0.13.0",
  "rust_decimal",
  "serde",
@@ -1775,6 +1829,99 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautilus-portfolio"
+version = "0.68.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb235e388cf67d0a3d756ecb12aea73aa1c3555ea6b575a2ac3f5451a3870917"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bon",
+ "indexmap",
+ "log",
+ "nautilus-analysis",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-model",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+]
+
+[[package]]
+name = "nautilus-risk"
+version = "0.68.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1412817ce810c4603eee09b4b82eb4400d4a3b55f9fbdbe59df9e35f550c3295"
+dependencies = [
+ "ahash",
+ "bon",
+ "indexmap",
+ "log",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-portfolio",
+ "rust_decimal",
+ "rust_decimal_macros",
+ "serde",
+ "ustr",
+]
+
+[[package]]
+name = "nautilus-system"
+version = "0.68.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09458f355c146d4c74ca45c602a155f5f56111f5cd8d3a973e10f6701e9f793b"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bon",
+ "futures",
+ "indexmap",
+ "log",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-data",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-portfolio",
+ "nautilus-risk",
+ "nautilus-trading",
+ "parking_lot 0.13.0",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "ustr",
+]
+
+[[package]]
+name = "nautilus-trading"
+version = "0.68.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf2e6787a99c3b2b870a6fc2a18d330f457bea50d5c79417346126c7839e31d0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bon",
+ "indexmap",
+ "jiff",
+ "log",
+ "nautilus-analysis",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-portfolio",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "strum",
+ "ustr",
+]
+
+[[package]]
 name = "ntapi"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1866,6 +2013,28 @@ name = "openssl-probe"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7e036b411754132fd6b74e94b74e9a13c5cf606fa93d1885c35860d3060820b1"
+
+[[package]]
+name = "paper-order"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "guard",
+ "ibapi",
+ "jiff",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-interactive-brokers",
+ "nautilus-live",
+ "nautilus-model",
+ "nautilus-trading",
+ "proptest",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+]
 
 [[package]]
 name = "papergrid"

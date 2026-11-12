@@ -268,6 +268,8 @@ pub enum JournalError {
     Corrupt,
     #[error("order key was already recorded")]
     Duplicate,
+    #[error("journal position arithmetic overflow")]
+    Overflow,
     #[error("journal write failed earlier; reopen and inspect before retrying")]
     Poisoned,
 }
@@ -328,6 +330,20 @@ impl Journal {
         self.records.iter().filter(|r| r.intent.day == day).count() as u64
     }
 
+    pub fn net_shares(&self, strategy: &str, symbol: &str) -> Result<i64, JournalError> {
+        sum_shares(self.records.iter().filter_map(|record| {
+            let intent = &record.intent;
+            if intent.strategy != strategy || intent.symbol != symbol {
+                return None;
+            }
+            let shares = i64::from(intent.shares);
+            Some(match intent.side {
+                Side::Buy => shares,
+                Side::Sell => -shares,
+            })
+        }))
+    }
+
     pub fn record(&mut self, approved: Approved) -> Result<Recorded, JournalError> {
         if self.poisoned {
             return Err(JournalError::Poisoned);
@@ -359,6 +375,12 @@ impl Journal {
             key: recorded.key,
         })
     }
+}
+
+fn sum_shares(deltas: impl IntoIterator<Item = i64>) -> Result<i64, JournalError> {
+    deltas.into_iter().try_fold(0_i64, |sum, delta| {
+        sum.checked_add(delta).ok_or(JournalError::Overflow)
+    })
 }
 
 #[cfg(test)]

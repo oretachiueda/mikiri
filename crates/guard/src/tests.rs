@@ -369,3 +369,36 @@ fn unreadable_kill_metadata_blocks_readable_config() {
         Err(ConfigError::Io(_))
     ));
 }
+
+#[test]
+fn journal_net_shares_filters_and_survives_reopen() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("journal.jsonl");
+    let mut journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 0);
+    for (day, strategy, symbol, side, shares) in [
+        (DAY, "demo", "SPY", Side::Buy, 4),
+        (DAY.next_day().unwrap(), "demo", "SPY", Side::Sell, 1),
+        (DAY, "other", "SPY", Side::Buy, 8),
+        (DAY, "demo", "QQQ", Side::Buy, 7),
+    ] {
+        let intent = Intent::new(day, strategy, symbol, side, shares).unwrap();
+        journal.record(Approved(intent)).unwrap();
+    }
+    assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 3);
+    assert_eq!(journal.net_shares("other", "SPY").unwrap(), 8);
+    assert_eq!(journal.net_shares("demo", "QQQ").unwrap(), 7);
+    assert_eq!(journal.net_shares("missing", "SPY").unwrap(), 0);
+    drop(journal);
+    let journal = Journal::open(path).unwrap();
+    assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 3);
+}
+
+#[test]
+fn journal_share_sum_rejects_positive_and_negative_overflow() {
+    for deltas in [[i64::MAX, 1], [i64::MIN, -1]] {
+        assert!(matches!(sum_shares(deltas), Err(JournalError::Overflow)));
+    }
+    assert_eq!(sum_shares([i64::MAX, -1]).unwrap(), i64::MAX - 1);
+    assert_eq!(sum_shares([i64::MIN, 1]).unwrap(), i64::MIN + 1);
+}
