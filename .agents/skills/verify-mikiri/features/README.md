@@ -9,6 +9,8 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 - [`h002-screen.md`](h002-screen.md): compute the H002 monthly screen in Rust and compare it with Python.
 - [`h003-compute.md`](h003-compute.md): compute the H003 leveraged-trend strategy and summary from Tiingo-format daily bars.
 - [`h003-recompute.md`](h003-recompute.md): recompute H003 in Python and compare every reported and daily value with Rust.
+- [`h004-compute.md`](h004-compute.md): compute separate dev/holdout RSI(2) overlay stages on synthetic bars.
+- [`h004-recompute.md`](h004-recompute.md): independently compare H004 indicators, accounting and gates in Python.
 - [`fetch-tiingo.md`](fetch-tiingo.md): download daily bars from Tiingo.
 
 - [`ib-probe.md`](ib-probe.md): validate arguments and fail safely without a TWS connection; live demo connection is human-run.
