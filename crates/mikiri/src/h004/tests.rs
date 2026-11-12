@@ -231,18 +231,30 @@ fn passing_verdict_accepts_only_true_dev_gates_and_matching_recompute() {
     let path =
         std::env::temp_dir().join(format!("mikiri-h004-verdict-{}.json", std::process::id()));
     let passing = json!({"stage":"dev","gate_a":true,"gate_b":true,"gate_c":true});
-    fs::write(&path, serde_json::to_vec(&passing).unwrap()).unwrap();
+    let envelope = json!({"match":true,"python_summary":passing});
+    fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
     assert!(require_dev_verdict(Some(&path)).is_ok());
+    for invalid in [
+        passing.clone(),
+        json!({"match":true,"stage":"dev","gate_a":true,"gate_b":true,"gate_c":true}),
+        json!({"python_summary":passing}),
+        json!({"match":false,"python_summary":passing}),
+        json!({"match":1,"python_summary":passing}),
+    ] {
+        fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(require_dev_verdict(Some(&path)).is_err());
+    }
     for gate in ["gate_a", "gate_b", "gate_c"] {
         for invalid in [json!(false), json!(1), json!(null)] {
-            let mut verdict = passing.clone();
-            verdict[gate] = invalid;
+            let mut verdict = envelope.clone();
+            verdict["python_summary"][gate] = invalid;
             fs::write(&path, serde_json::to_vec(&verdict).unwrap()).unwrap();
             assert!(require_dev_verdict(Some(&path)).is_err());
         }
     }
-    let verdict = json!({"python_summary":passing,"match":false});
-    fs::write(&path, serde_json::to_vec(&verdict).unwrap()).unwrap();
+    let mut wrong_stage = envelope;
+    wrong_stage["python_summary"]["stage"] = json!("holdout");
+    fs::write(&path, serde_json::to_vec(&wrong_stage).unwrap()).unwrap();
     assert!(require_dev_verdict(Some(&path)).is_err());
     fs::remove_file(path).unwrap();
 }
@@ -314,4 +326,30 @@ fn flat_and_near_boundary_average_comparisons_are_stable() {
             .iter()
             .all(|row| row.signal == Some(false))
     );
+}
+
+#[test]
+fn indicator_path_exits_before_considering_reentry() {
+    let mut rows = fixture(0);
+    rows.truncate(257);
+    for (i, row) in rows.iter_mut().enumerate() {
+        row["close"] = json!(match i {
+            0..=199 => 100.0,
+            200..=249 => 200.0,
+            250..=254 => 150.0,
+            255 => 150.01,
+            _ => 150.011,
+        });
+        row["divCash"] = json!(0.0);
+    }
+    let bars = parse_daily_bars(&serde_json::to_vec(&rows).unwrap()).unwrap();
+    let history = indicators(&bars).unwrap();
+    assert_eq!(history[254].signal, Some(true));
+    for i in [255, 256] {
+        let row = &history[i];
+        assert!(row.index > row.m5.unwrap() && row.index > row.m200.unwrap());
+        assert!(row.rsi.unwrap() <= 5.0);
+    }
+    assert_eq!(history[255].signal, Some(false));
+    assert_eq!(history[256].signal, Some(true));
 }

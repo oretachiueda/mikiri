@@ -400,10 +400,9 @@ def require_dev_verdict(path: Path | None) -> None:
     verdict = json.loads(path.read_text())
     if not isinstance(verdict, dict):
         raise TypeError("invalid dev verdict")
-    if "python_summary" in verdict:
-        if verdict.get("match") is not True:
-            raise ValueError("dev verdict must match")
-        verdict = verdict["python_summary"]
+    if verdict.get("match") is not True:
+        raise ValueError("dev verdict must match")
+    verdict = verdict.get("python_summary")
     if (
         not isinstance(verdict, dict)
         or verdict.get("stage") != "dev"

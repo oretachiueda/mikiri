@@ -221,36 +221,48 @@ def test_holdout_requires_passing_dev_before_data(tmp_path):
     with pytest.raises(ValueError, match="dev verdict"):
         compute({}, "holdout")
     path = tmp_path / "dev.json"
+    summary = {"stage": "dev", "gate_a": True, "gate_b": True, "gate_c": True}
+    passing = {"match": True, "python_summary": summary}
+    path.write_text(json.dumps(passing))
+    require_dev_verdict(path)
+    for invalid in (
+        summary,
+        {"match": True, **summary},
+        {"match": False, "python_summary": summary},
+        {"python_summary": summary},
+        {"match": 1, "python_summary": summary},
+    ):
+        path.write_text(json.dumps(invalid))
+        with pytest.raises(ValueError):
+            require_dev_verdict(path)
+    for key in ("gate_a", "gate_b", "gate_c"):
+        for value in (False, 1, None):
+            path.write_text(
+                json.dumps({"match": True, "python_summary": summary | {key: value}})
+            )
+            with pytest.raises(ValueError, match="A, B, C"):
+                require_dev_verdict(path)
     path.write_text(
-        json.dumps({"stage": "dev", "gate_a": True, "gate_b": True, "gate_c": 1})
+        json.dumps({"match": True, "python_summary": summary | {"stage": "holdout"}})
     )
     with pytest.raises(ValueError, match="A, B, C"):
-        require_dev_verdict(path)
-    path.write_text(
-        json.dumps({"stage": "dev", "gate_a": True, "gate_b": True, "gate_c": True})
-    )
-    require_dev_verdict(path)
-    path.write_text(
-        json.dumps(
-            {
-                "python_summary": {
-                    "stage": "dev",
-                    "gate_a": True,
-                    "gate_b": True,
-                    "gate_c": True,
-                },
-                "match": False,
-            }
-        )
-    )
-    with pytest.raises(ValueError, match="match"):
         require_dev_verdict(path)
 
 
 def test_holdout_is_fresh_and_has_no_dev_gates(synthetic, tmp_path):
     path = tmp_path / "dev.json"
     path.write_text(
-        json.dumps({"stage": "dev", "gate_a": True, "gate_b": True, "gate_c": True})
+        json.dumps(
+            {
+                "match": True,
+                "python_summary": {
+                    "stage": "dev",
+                    "gate_a": True,
+                    "gate_b": True,
+                    "gate_c": True,
+                },
+            }
+        )
     )
     days, result = compute(synthetic, "holdout", path)
     assert days[0]["date"] == date(2024, 11, 1)
@@ -355,3 +367,21 @@ def test_daily_returns_have_absolute_floor_assets_stay_relative():
     assert compare([day], {}, [day | {"V": 0.0001 + 1e-13}], {}) == [
         "days[0].V: mismatch"
     ]
+
+
+def test_indicator_path_exits_before_considering_reentry():
+    prices = [100.0] * 200 + [200.0] * 50 + [150.0] * 5 + [150.01, 150.011]
+    bars = parse_rows(
+        [
+            raw_bar(date(2000, 1, 1) + timedelta(days=i), price)
+            for i, price in enumerate(prices)
+        ]
+    )
+    history = signal_history(bars)
+    assert history[254]["signal"] is True
+    for i in (255, 256):
+        row = history[i]
+        assert row["index"] > row["m5"] and row["index"] > row["m200"]
+        assert row["rsi"] <= 5
+    assert history[255]["signal"] is False
+    assert history[256]["signal"] is True

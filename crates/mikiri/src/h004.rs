@@ -472,14 +472,10 @@ pub fn compute(bars: &[Vec<DailyBar>; 2], stage: Stage) -> Result<(Vec<Day>, ser
 pub fn require_dev_verdict(path: Option<&Path>) -> Result<()> {
     let verdict: serde_json::Value =
         serde_json::from_slice(&fs::read(path.ok_or("holdout requires --dev-verdict")?)?)?;
-    let summary = if verdict.get("python_summary").is_some() {
-        if verdict.get("match").and_then(|v| v.as_bool()) != Some(true) {
-            return Err("dev verdict comparison must match".into());
-        }
-        &verdict["python_summary"]
-    } else {
-        &verdict
-    };
+    if verdict.get("match").and_then(|v| v.as_bool()) != Some(true) {
+        return Err("dev verdict comparison must match".into());
+    }
+    let summary = &verdict["python_summary"];
     if summary["stage"] != "dev"
         || ["gate_a", "gate_b", "gate_c"]
             .iter()

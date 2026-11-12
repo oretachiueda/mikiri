@@ -114,10 +114,20 @@ print("future-price invariance: every Rust dev output byte-identical, even inval
 refused = root / "refused"
 command([*binary, "--stage", "holdout", "--out", refused], success=False)
 assert not refused.exists()
-(out / "failed-dev.json").write_text(json.dumps({"stage": "dev", "gate_a": False, "gate_b": True, "gate_c": True}))
+(out / "failed-dev.json").write_text(json.dumps({"match": True, "python_summary": {"stage": "dev", "gate_a": False, "gate_b": True, "gate_c": True}}))
 command([*binary, "--stage", "holdout", "--out", refused,
          "--dev-verdict", out / "failed-dev.json"], success=False)
 assert not refused.exists()
+
+(out / "bare-dev.json").write_text(json.dumps({"stage": "dev", "gate_a": True, "gate_b": True, "gate_c": True}))
+command([*binary, "--stage", "holdout", "--out", refused,
+         "--dev-verdict", out / "bare-dev.json"], success=False)
+assert not refused.exists()
+command(["uv", "run", "--locked", "--project", "stats", "python", "stats/h004.py",
+         "--stage", "holdout", "--run", refused,
+         "--dev-verdict", out / "bare-dev.json"], success=False)
+assert not refused.exists()
+print("bare dev summary: Rust and Python refuse without outputs")
 
 for field, value in (("close", 0), ("splitFactor", 0), ("divCash", -1)):
     invalid = json.loads((out / "sso.json").read_text())
