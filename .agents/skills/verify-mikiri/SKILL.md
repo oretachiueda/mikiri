@@ -1,6 +1,6 @@
 ---
 name: verify-mikiri
-description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
+description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, h005-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, stats/h005.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
 ---
 
 # Verify Mikiri
@@ -19,12 +19,12 @@ Nothing stays running. Launch is one build from the repository root.
 cargo build --locked -p mikiri --bins
 ```
 
-The binaries are `target/debug/h001-compute`, `target/debug/h002-compute`, `target/debug/h003-compute`, `target/debug/h004-compute`, and `target/debug/fetch-tiingo`. The Python batches need no build. `uv run --locked --project stats` creates its environment on first use.
+The binaries are `target/debug/h001-compute`, `target/debug/h002-compute`, `target/debug/h003-compute`, `target/debug/h004-compute`, `target/debug/h005-compute`, and `target/debug/fetch-tiingo`. The Python batches need no build. `uv run --locked --project stats` creates its environment on first use.
 
 ## Doctor
 
 ```bash
-command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/h002-compute && test -x target/debug/h003-compute && test -x target/debug/h004-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
+command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/h002-compute && test -x target/debug/h003-compute && test -x target/debug/h004-compute && test -x target/debug/h005-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
 ```
 
 `doctor-ok` means that the tools exist, the binaries are built, and git ignores the directories that a drive writes to. If the line prints nothing, fix that before you drive.
@@ -42,6 +42,8 @@ Run `.agents/skills/verify-mikiri/drive-h002.sh` to verify both H002 commands on
 Run `.agents/skills/verify-mikiri/drive-h003.sh` to verify H003 compute and independent Python recompute on synthetic Tiingo-format SPY, SPXL, and BIL arrays and keep proof in `/tmp/mikiri-verify-h003-<id>/`.
 
 Run `.agents/skills/verify-mikiri/drive-h004.sh` for both H004 stages, independent Python comparisons, dev cutoff invariance and refusal paths on synthetic Tiingo arrays. Evidence stays in `/tmp/mikiri-verify-h004-<id>/`.
+
+Run `.agents/skills/verify-mikiri/drive-h005.sh` for both H005 stages, independent Python comparisons, dev cutoff invariance across FX, rates, and SPY, authorization refusals, and tamper detection on synthetic inputs. Evidence stays in `/tmp/mikiri-verify-h005-<id>/`.
 
 Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Drive its offline argument and connection-failure paths with `features/ib-probe.md`. A real connection requires human-run TWS and explicit authorization; the skill does not drive it.
 
@@ -67,7 +69,7 @@ Proof standards:
 
 ## Cleanup
 
-`drive.sh` deletes its own run directory, `results/verify-<id>`, when it exits. If that directory already exists, the script stops before it writes anything. The evidence directory stays. The shell failure recipes in `features/` write no result files. The pytest mismatch recipe makes a `results/h001-test-*` directory and deletes it when it ends. Never delete another directory under `results/` or `data/`.
+`drive.sh` deletes its own run directory, `results/verify-<id>`, when it exits. `drive-h005.sh` deletes only its own `results/verify-h005-<id>` directory when it exits. If that directory already exists, the script stops before it writes anything. The evidence directory stays. The shell failure recipes in `features/` write no result files. The pytest mismatch recipe makes a `results/h001-test-*` directory and deletes it when it ends. Never delete another directory under `results/` or `data/`.
 
 ## Limits
 
