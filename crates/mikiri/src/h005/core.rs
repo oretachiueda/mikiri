@@ -338,6 +338,12 @@ fn history(source: &Sources, stage: Stage) -> Result<Vec<Day>> {
     for i in 0..days.len() {
         days[i].month_end = i + 1 == days.len() || month(days[i].date) != month(days[i + 1].date);
         if days[i].month_end {
+            if days[i]
+                .sigma
+                .is_some_and(|sigma| sigma.iter().any(|v| *v <= 0.0 || !v.is_finite()))
+            {
+                return Err("volatility must be positive and finite".into());
+            }
             ends.insert(month(days[i].date), i);
         }
     }

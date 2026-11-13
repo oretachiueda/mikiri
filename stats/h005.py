@@ -314,6 +314,12 @@ def indicators(history: History) -> list[dict]:
                 mean_value = means[j]
                 sigma = math.sqrt(261.0 * max(0.0, seconds[j]))
             is_end = history.month_ends[month(observed)] == i
+            if (
+                is_end
+                and sigma is not None
+                and (sigma <= 0 or not math.isfinite(sigma))
+            ):
+                raise ValueError("volatility must be positive and finite")
             lookback = history.month_ends.get((observed.year - 1, observed.month))
             if is_end and lookback is not None:
                 cumulative = 1.0

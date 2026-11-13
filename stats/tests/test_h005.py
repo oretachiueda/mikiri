@@ -15,6 +15,21 @@ def number(value):
     return float(value)
 
 
+def test_zero_month_end_volatility_before_first_target_stops(rows):
+    altered = copy.deepcopy(rows)
+    for row in altered:
+        if row["kind"] == "rate":
+            row["value"] = 2.0
+        elif (
+            row["kind"] == "fx"
+            and row["series"] == "DEXUSEU"
+            and row["date"] <= "2009-05-31"
+        ):
+            row["value"] = 1.0
+    with pytest.raises(ValueError, match="^volatility must be positive and finite$"):
+        h.compute(altered)
+
+
 def observation(
     kind, series, observed, value=None, close=None, dividend=None, split=None
 ):

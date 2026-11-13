@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn zero_month_end_volatility_before_first_target_stops() {
+    let mut rows = synthetic_rows("2024-10-31");
+    for row in &mut rows {
+        if row.kind == "rate" {
+            row.value = Some(2.0);
+        } else if row.kind == "fx" && row.series == "DEXUSEU" && row.date.as_str() <= "2009-05-31" {
+            row.value = Some(1.0);
+        }
+    }
+    let error =
+        compute(&rows, Stage::Dev).expect_err("unused month-end zero volatility must stop the run");
+    assert_eq!(error.to_string(), "volatility must be positive and finite");
+}
+
 fn d(s: &str) -> Date {
     date(s).unwrap()
 }
