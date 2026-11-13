@@ -15,6 +15,49 @@ def number(value):
     return float(value)
 
 
+def test_rate_vintage_signals_use_each_currency_preparation_history(rows):
+    augmented = copy.deepcopy(rows)
+    series_ids = dict(zip((*h.AREAS, "USA"), (*h.FIRST_RATES, h.US_FIRST), strict=True))
+    for row in rows:
+        if row["kind"] != "rate":
+            continue
+        area = row["series"]
+        start = "2013-04-01" if area in {"USA", "CAN"} else "2013-05-01"
+        if row["date"] >= start:
+            value = (
+                None if area == "USA" and row["date"] == "2020-04-01" else row["value"]
+            )
+            augmented.append(
+                {
+                    **row,
+                    "kind": "first_rate",
+                    "series": series_ids[area],
+                    "value": value,
+                }
+            )
+    augmented.sort(key=lambda row: (row["kind"], row["series"], row["date"]))
+    prepared, days, summary = h.compute(augmented)
+    for signal in summary["vintage"]["rate_signals"]:
+        expected = "2014-05-30" if signal["currency"] == "CAD" else "2014-06-30"
+        assert signal["available_start"] == expected
+        values = signal["values"]
+        first = next(i for i, row in enumerate(values) if row["date"] == expected)
+        assert values[first - 1]["first_signal"] is None
+        assert values[first]["first_signal"] == values[first]["current_signal"]
+        assert signal["comparable_months"] == len(values) - first
+    truncated = [
+        row
+        for row in augmented
+        if row["kind"] != "first_rate" or row["date"] >= "2013-06-01"
+    ]
+    old_prepared, old_days, old_summary = h.compute(truncated)
+    del summary["vintage"]["rate_signals"]
+    del old_summary["vintage"]["rate_signals"]
+    assert json.dumps(summary) == json.dumps(old_summary)
+    assert json.dumps(days) == json.dumps(old_days)
+    assert json.dumps(prepared) == json.dumps(old_prepared)
+
+
 def test_zero_month_end_volatility_before_first_target_stops(rows):
     altered = copy.deepcopy(rows)
     for row in altered:

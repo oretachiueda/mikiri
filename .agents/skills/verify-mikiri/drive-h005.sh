@@ -235,7 +235,11 @@ rate_ids = dict(zip(("EA20", "JPN", "GBR", "CHE", "CAN", "AUS", "NZL", "NOR", "S
 for area, code in rate_ids.items():
     series = f"IR3TIB01{code}M156N"
     observations = [line.split(",") for line in rates.read_text().splitlines()[1:]]
-    values = [f"{row[10]}-01,{row[11]}" for row in observations if row[1] == area and row[10] >= "2013-06"]
+    start = "2013-04" if area in {"USA", "CAN"} else "2013-05"
+    available = {row[10]: row[11] for row in observations if row[1] == area and row[10] >= start}
+    if area == "USA":
+        available["2020-04"] = ""
+    values = [f"{month}-01,{value}" for month, value in sorted(available.items())]
     (vintages / f"{series}.csv").write_text(f"observation_date,{series}\n" + "\n".join(values) + "\n")
 vintage_dev = root / "vintage-dev"
 log_command([*rust, "--stage", "dev", "--out", vintage_dev, "--first-release-dir", vintages])
@@ -244,6 +248,10 @@ vintage_summary = json.loads((vintage_dev / "summary.json").read_text())
 assert vintage_summary["report_tables"] == summary["report_tables"]
 for row in vintage_summary["vintage"]["spot"] + vintage_summary["vintage"]["rate_signals"]:
     assert row["comparable_months"] > 0 and row["signal_flips"] == 0
+for row in vintage_summary["vintage"]["rate_signals"]:
+    expected = "2014-05-30" if row["currency"] == "CAD" else "2014-06-30"
+    assert row["available_start"] == expected, row
+say("staggered first-release rate starts: CAD=2014-05-30; other currencies=2014-06-30")
 vintage_hash = sha(vintage_dev / "SHA256SUMS")
 vintage_ledger = root / "vintage-ledger.jsonl"
 vintage_ledger.write_text("".join(json.dumps(row) + "\n" for row in (
@@ -256,7 +264,7 @@ log_command([*py, "--stage", "holdout", "--run", vintage_holdout, "--dev-match",
 for stage, directory in (("dev", vintage_dev), ("holdout", vintage_holdout)):
     envelope = json.loads((directory / "verdict.json").read_text())
     assert envelope["match"] is True and envelope["mismatches"] == []
-    for name in ("summary.json", "verdict.json", "SHA256SUMS"):
+    for name in ("summary.json", "verdict.json", "SHA256SUMS", "observations.parquet", "indicators.parquet", "days.parquet"):
         shutil.copy2(directory / name, evidence / f"{stage}-vintage-{name}")
 say("optional first-release FX and rates: both stages match=true; unchanged trading reports; no synthetic signal flips")
 
