@@ -744,10 +744,7 @@ fn vintage(source: &Sources, history: &[Day], stage: Stage) -> Result<Value> {
     let mut spot_rows = Vec::new();
     let mut rate_signal_rows = Vec::new();
     let minimum_rate = date("2013-06-01")?;
-    let mut first_rates = source.first_rates.clone();
-    for series in &mut first_rates {
-        series.retain(|d, _| *d >= minimum_rate);
-    }
+    let first_rates = &source.first_rates;
     for (j, currency) in CURRENCIES.iter().enumerate() {
         let mut first_spots = Vec::with_capacity(history.len());
         for d in history {
@@ -766,7 +763,7 @@ fn vintage(source: &Sources, history: &[Day], stage: Stage) -> Result<Value> {
                     returns[i] = Some(value);
                 }
             }
-            if let Some(carry) = integrated(&first_rates, &source.rates[9], prev.date, day.date, j)?
+            if let Some(carry) = integrated(first_rates, &source.rates[9], prev.date, day.date, j)?
             {
                 let value = day.spot[j] / prev.spot[j] - 1.0 + carry;
                 if value.is_finite() {

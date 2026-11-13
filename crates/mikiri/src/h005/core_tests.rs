@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn rate_vintage_signals_use_each_currency_preparation_history() {
+    let mut rows = synthetic_rows("2024-10-31");
+    let mut initial = Vec::new();
+    for row in rows.iter().filter(|r| r.kind == "rate") {
+        let j = AREAS.iter().position(|area| *area == row.series).unwrap();
+        let start = if matches!(j, 4 | 9) {
+            "2013-04-01"
+        } else {
+            "2013-05-01"
+        };
+        if row.date.as_str() >= start {
+            let value = if j == 9 && row.date == "2020-04-01" {
+                None
+            } else {
+                row.value
+            };
+            initial.push(observation(
+                "first_rate",
+                FIRST_RATES[j],
+                d(&row.date),
+                value,
+            ));
+        }
+    }
+    rows.extend(initial);
+    rows.sort_by(|a, b| (&a.kind, &a.series, &a.date).cmp(&(&b.kind, &b.series, &b.date)));
+    let mut result = compute(&rows, Stage::Dev).unwrap();
+    for signal in result.summary["vintage"]["rate_signals"]
+        .as_array()
+        .unwrap()
+    {
+        let expected = if signal["currency"] == "CAD" {
+            "2014-05-30"
+        } else {
+            "2014-06-30"
+        };
+        assert_eq!(
+            signal["available_start"], expected,
+            "{}",
+            signal["currency"]
+        );
+        let values = signal["values"].as_array().unwrap();
+        let first = values.iter().position(|v| v["date"] == expected).unwrap();
+        assert!(values[first - 1]["first_signal"].is_null());
+        assert_eq!(
+            values[first]["first_signal"],
+            values[first]["current_signal"]
+        );
+        assert_eq!(signal["comparable_months"], values.len() - first);
+    }
+    rows.retain(|r| r.kind != "first_rate" || r.date.as_str() >= "2013-06-01");
+    let mut truncated = compute(&rows, Stage::Dev).unwrap();
+    result.summary["vintage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("rate_signals");
+    truncated.summary["vintage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("rate_signals");
+    assert_eq!(
+        serde_json::to_vec(&result.summary).unwrap(),
+        serde_json::to_vec(&truncated.summary).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&result.days).unwrap(),
+        serde_json::to_vec(&truncated.days).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&result.indicators).unwrap(),
+        serde_json::to_vec(&truncated.indicators).unwrap()
+    );
+}
+
+#[test]
 fn zero_month_end_volatility_before_first_target_stops() {
     let mut rows = synthetic_rows("2024-10-31");
     for row in &mut rows {
@@ -464,15 +539,7 @@ fn identical_available_vintages_reproduce_current_signals_and_missing_history_st
     for row in v["rate_signals"].as_array().unwrap() {
         assert!(row["comparable_months"].as_u64().unwrap() > 0);
         assert_eq!(row["signal_flips"], 0);
-        assert!(
-            row["values"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|r| r["date"] == "2013-06-28")
-                .unwrap()["first_signal"]
-                .is_null()
-        );
+        assert_eq!(row["available_start"], "2013-06-28");
     }
     let may = v["rate_signals"][0]["values"]
         .as_array()
