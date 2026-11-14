@@ -277,6 +277,78 @@ mod tests {
         identifiers::AccountId,
     };
 
+    fn recorded() -> (Recorded, Arc<Mutex<guard::Journal>>, std::path::PathBuf) {
+        let directory = std::env::temp_dir().join(format!("mikiri-execution-{}", UUID4::new()));
+        std::fs::create_dir(&directory).unwrap();
+        let config = directory.join("limits.toml");
+        std::fs::write(&config, "expires_on = \"2026-11-30\"\nsymbols = [\"SPY\"]\nmax_position_shares = 1\nmax_daily_orders = 4\nmax_daily_loss_usd = 50.0\n").unwrap();
+        let day = time::macros::date!(2026 - 11 - 11);
+        let limits = guard::Limits::load(&config, day).unwrap();
+        let intent = Intent::new(day, "demo", "SPY", Side::Buy, 1).unwrap();
+        let approved = guard::check(
+            &limits,
+            &guard::Account {
+                position: 0,
+                daily_pnl_usd: 0.0,
+            },
+            0,
+            &intent,
+        )
+        .unwrap();
+        let mut journal = guard::Journal::open(directory.join("journal")).unwrap();
+        let recorded = journal.record(approved).unwrap();
+        (recorded, Arc::new(Mutex::new(journal)), directory)
+    }
+
+    fn register_cache(
+        strategy: &mut DemoStrategy,
+    ) -> std::rc::Rc<std::cell::RefCell<nautilus_common::cache::Cache>> {
+        let cache = std::rc::Rc::new(std::cell::RefCell::new(
+            nautilus_common::cache::Cache::default(),
+        ));
+        nautilus_common::actor::DataActorNative::core_mut(strategy)
+            .register(
+                TraderId::new("DEMO-001"),
+                std::rc::Rc::new(std::cell::RefCell::new(
+                    nautilus_common::clock::VirtualClock::new(),
+                )),
+                cache.clone(),
+            )
+            .unwrap();
+        cache
+    }
+
+    #[test]
+    fn recorded_preflight_without_quote_never_submits() {
+        let (recorded, journal, directory) = recorded();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(recorded).unwrap();
+        let result = Arc::new(Mutex::new(None));
+        let mut strategy = DemoStrategy::new(
+            receiver,
+            result.clone(),
+            LiveNodeHandle::default(),
+            "SYNTHETIC-ACCOUNT".into(),
+        )
+        .unwrap();
+        register_cache(&mut strategy);
+        let event = TimeEvent::new(
+            "paper-order-poll".into(),
+            UUID4::new(),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+        DataActor::on_time_event(&mut strategy, &event).unwrap();
+        assert!(
+            strategy.submitted.is_none(),
+            "a recorded intent must wait for a cached market price"
+        );
+        assert!(result.lock().unwrap().is_none());
+        drop(strategy);
+        drop(journal);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn terminal_events_report_masked_reasons_without_resubmitting() {
         let trader = TraderId::new("DEMO-001");
