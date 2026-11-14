@@ -402,3 +402,32 @@ fn journal_share_sum_rejects_positive_and_negative_overflow() {
     assert_eq!(sum_shares([i64::MAX, -1]).unwrap(), i64::MAX - 1);
     assert_eq!(sum_shares([i64::MIN, 1]).unwrap(), i64::MIN + 1);
 }
+
+#[test]
+fn non_fill_outcomes_reconcile_without_releasing_keys() {
+    for outcome in ["denied", "rejected"] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("journal");
+        let mut journal = Journal::open(&path).unwrap();
+        let recorded = journal.record(approved()).unwrap();
+        assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 1);
+        let original = fs::read_to_string(&path).unwrap();
+        drop(journal);
+        let terminal = format!(
+            "{{\"key\":\"{}\",\"outcome\":\"{outcome}\",\"recorded_at\":\"2026-11-11T16:00:00Z\"}}\n",
+            recorded.key()
+        );
+        fs::write(&path, format!("{original}{terminal}")).unwrap();
+        let mut journal = Journal::open(&path).unwrap();
+        assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 0);
+        assert_eq!(journal.orders_on(DAY), 1);
+        assert!(matches!(
+            journal.record(approved()),
+            Err(JournalError::Duplicate)
+        ));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{original}{terminal}")
+        );
+    }
+}
