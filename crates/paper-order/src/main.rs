@@ -91,8 +91,11 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
         let handle = session.node.handle();
         let result = Arc::new(Mutex::new(None));
         let (sender, receiver) = mpsc::channel();
+        let (quote_ready, ready_receiver) = mpsc::channel();
         session.node.add_strategy(execution::DemoStrategy::new(
             receiver,
+            quote_ready,
+            Arc::clone(&session.journal),
             Arc::clone(&result),
             handle.clone(),
             raw_account.clone(),
@@ -109,6 +112,16 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
                 })
                 .await
                 .map_err(|_| anyhow::anyhow!("node readiness timeout"))?;
+                loop {
+                    match ready_receiver.try_recv() {
+                        Ok(()) => break,
+                        Err(mpsc::TryRecvError::Empty) => {
+                            tokio::time::sleep(Duration::from_millis(50)).await
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => anyhow::bail!("no market quote"),
+                    }
+                }
+                drop(ready_receiver);
                 let snapshot = broker::snapshot(&shared).await?;
                 let (net, daily_pnl) = {
                     let journal = task_journal
@@ -160,7 +173,9 @@ fn run(account: &mut Option<String>) -> anyhow::Result<(String, u8)> {
                 Err(error) => {
                     let (line, diagnostic) = errors::refusal(&error, Some(&task_account));
                     eprintln!("{diagnostic}");
-                    if let Ok(mut slot) = task_result.lock() {
+                    if let Ok(mut slot) = task_result.lock()
+                        && slot.is_none()
+                    {
                         *slot = Some((line, 1));
                     }
                     handle.stop();
@@ -255,8 +270,11 @@ mod tests {
         let result = (|| -> anyhow::Result<()> {
             for _ in 0..2 {
                 let (_sender, receiver) = mpsc::channel();
+                let (quote_ready, _ready_receiver) = mpsc::channel();
                 let strategy = execution::DemoStrategy::new(
                     receiver,
+                    quote_ready,
+                    Arc::clone(&session.journal),
                     Arc::new(Mutex::new(None)),
                     handle.clone(),
                     "DU1234567".into(),

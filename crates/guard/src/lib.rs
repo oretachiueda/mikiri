@@ -242,6 +242,29 @@ struct Entry {
     recorded_at: OffsetDateTime,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NonFillOutcome {
+    Denied,
+    Rejected,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NonFillEntry {
+    key: String,
+    outcome: NonFillOutcome,
+    #[serde(with = "time::serde::rfc3339")]
+    recorded_at: OffsetDateTime,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum JournalEntry {
+    Intent(Entry),
+    NonFill(NonFillEntry),
+}
+
 #[derive(Debug)]
 pub struct Recorded {
     key: String,
@@ -279,6 +302,7 @@ pub struct Journal {
     file: File,
     records: Vec<Entry>,
     keys: HashSet<String>,
+    non_fills: HashSet<String>,
     poisoned: bool,
 }
 
@@ -297,23 +321,36 @@ impl Journal {
         }
         let mut records = Vec::new();
         let mut keys = HashSet::new();
+        let mut non_fills = HashSet::new();
         let mut reader = BufReader::new(&file);
         let mut line = Vec::new();
         while reader.read_until(b'\n', &mut line)? != 0 {
             if !line.ends_with(b"\n") {
                 return Err(JournalError::Corrupt);
             }
-            let recorded: Entry =
+            let entry: JournalEntry =
                 serde_json::from_slice(&line).map_err(|_| JournalError::Corrupt)?;
-            let i = &recorded.intent;
-            if Intent::new(i.day, &i.strategy, &i.symbol, i.side, i.shares).is_err()
-                || recorded.key != Intent(i.clone()).key()
-                || recorded.recorded_at.offset() != time::UtcOffset::UTC
-                || !keys.insert(recorded.key.clone())
-            {
-                return Err(JournalError::Corrupt);
+            match entry {
+                JournalEntry::Intent(recorded) => {
+                    let i = &recorded.intent;
+                    if Intent::new(i.day, &i.strategy, &i.symbol, i.side, i.shares).is_err()
+                        || recorded.key != Intent(i.clone()).key()
+                        || recorded.recorded_at.offset() != time::UtcOffset::UTC
+                        || !keys.insert(recorded.key.clone())
+                    {
+                        return Err(JournalError::Corrupt);
+                    }
+                    records.push(recorded);
+                }
+                JournalEntry::NonFill(outcome) => {
+                    if !keys.contains(&outcome.key)
+                        || outcome.recorded_at.offset() != time::UtcOffset::UTC
+                        || !non_fills.insert(outcome.key)
+                    {
+                        return Err(JournalError::Corrupt);
+                    }
+                }
             }
-            records.push(recorded);
             line.clear();
         }
         // Persist the directory entry as well as order data before any Recorded can escape.
@@ -322,6 +359,7 @@ impl Journal {
             file,
             records,
             keys,
+            non_fills,
             poisoned: false,
         })
     }
@@ -333,7 +371,10 @@ impl Journal {
     pub fn net_shares(&self, strategy: &str, symbol: &str) -> Result<i64, JournalError> {
         sum_shares(self.records.iter().filter_map(|record| {
             let intent = &record.intent;
-            if intent.strategy != strategy || intent.symbol != symbol {
+            if intent.strategy != strategy
+                || intent.symbol != symbol
+                || self.non_fills.contains(&record.key)
+            {
                 return None;
             }
             let shares = i64::from(intent.shares);
@@ -342,6 +383,37 @@ impl Journal {
                 Side::Sell => -shares,
             })
         }))
+    }
+
+    pub fn record_non_fill(
+        &mut self,
+        recorded: &Recorded,
+        outcome: NonFillOutcome,
+    ) -> Result<(), JournalError> {
+        if self.poisoned {
+            return Err(JournalError::Poisoned);
+        }
+        if !self
+            .records
+            .iter()
+            .any(|entry| entry.key == recorded.key && entry.intent == recorded.intent.0)
+            || self.non_fills.contains(recorded.key())
+        {
+            return Err(JournalError::Corrupt);
+        }
+        let entry = NonFillEntry {
+            key: recorded.key.clone(),
+            outcome,
+            recorded_at: OffsetDateTime::now_utc(),
+        };
+        let mut line = serde_json::to_vec(&entry).map_err(|_| JournalError::Corrupt)?;
+        line.push(b'\n');
+        self.poisoned = true;
+        self.file.write_all(&line)?;
+        self.file.sync_all()?;
+        self.non_fills.insert(entry.key);
+        self.poisoned = false;
+        Ok(())
     }
 
     pub fn record(&mut self, approved: Approved) -> Result<Recorded, JournalError> {
