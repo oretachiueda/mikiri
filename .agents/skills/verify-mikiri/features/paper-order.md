@@ -1,6 +1,6 @@
 # Guarded demo orders
 
-`paper-order` reconciles the SPY demo position before recording and submitting one market DAY order through Nautilus. `status` reads broker state through the shared IB client without constructing a LiveNode, and works with the TWS Read-Only API enabled. The connection is fixed to 127.0.0.1:7497, client ID 8 (the probe uses 7), strategy `demo`, symbol `SPY`.
+`paper-order` reconciles the SPY demo position before recording and submitting one market DAY order through Nautilus. It waits up to 30 seconds for a cached SPY quote or trade before starting the order preflight; missing market data refuses without recording an intent or submitting an order. `status` reads broker state through the shared IB client without constructing a LiveNode, and works with the TWS Read-Only API enabled. The connection is fixed to 127.0.0.1:7497, client ID 8 (the probe uses 7), strategy `demo`, symbol `SPY`.
 
 ## Sub-features
 
@@ -8,7 +8,7 @@
 - Missing, invalid, expired, or killed limits stop before connection.
 - Orders require New York weekdays 09:35–15:55, one D-prefixed managed account, matching journal position, no open SPY order, and known finite USD daily P&L.
 - Any SPY stock/USD row with a missing or different account identity refuses the read; a disconnected open-order stream also refuses.
-- Durable journal keys prevent same-day duplicate intents. Rejected and pending keys remain used.
+- Durable journal keys prevent same-day duplicate intents. Denied, rejected, and pending keys remain used and count toward the daily order limit. Confirmed zero-fill Denied/Rejected outcomes are appended against the original key and excluded from journal exposure, including after restart. Pending, canceled, expired, and partial-fill outcomes remain conservative and may need human reconciliation.
 - Timeout never cancels or resubmits. Shutdown never closes a position.
 - Buy/sell use a LiveNode and require Read-Only API OFF. TWS error 321 reports `refused: TWS API is read-only`; status never requests order IDs.
 - Daily P&L is current verified USD `EquityWithLoanValue` minus that UTC day's baseline. The account summary must contain at least one finite USD `EquityWithLoanValue` row for the verified account; repeated rows are accepted only when their parsed values have identical floating-point bits. Differing repeats make P&L unknown. After the journal opens, status atomically initializes a missing baseline or rolls an older baseline forward to today's equity; either case reports P&L as `0.00`. A same-day baseline is subtracted from current equity. Missing current equity makes P&L unknown. A baseline dated after today, corrupt JSON, or unknown JSON fields also makes P&L unknown and emits a masked stderr diagnostic; corrupt baseline data is left untouched. The stored baseline contains only `day` and `equity_usd`; USD and row consistency are validated from the current broker response, not the file. Unknown P&L blocks orders.
@@ -52,6 +52,15 @@ PYCODE
 
 The recipe exits 0 only if all failures occur before journal or baseline creation. Keep the output and exit codes as evidence. Market-hours refusal can be driven with valid temporary config, journal, and baseline paths plus a buy command only when the current New York time is outside the window; otherwise skip that real CLI path and record why. Never force a clock or connect during a skill run.
 
+Run the synthetic strategy and journal regressions without a broker connection:
+
+```bash
+cargo test --locked -p paper-order execution::tests -- --nocapture
+cargo test --locked -p guard -- --nocapture
+```
+
+The strategy tests register only an offline cache and inject synthetic ticks and order events. They must prove the quote wait, no-quote refusal without a journal intent, and zero-fill Denied/Rejected journal reconciliation with the key still consumed. Guard tests must prove append-only restart replay, daily count preservation, and fail-closed malformed outcomes. These checks do not prove delayed quotes arrive from TWS. Never use a real socket or live recording for these regressions.
+
 ## Gotchas
 
-Never drive buy or sell against TWS from this skill. The startup provider uses Raw symbology for `SPY=STK.SMART`; the default Simplified method resolves a different instrument ID. Account IDs and balances must never appear in output or wire recordings. Exchange holidays are not modeled: a holiday order may remain pending until timeout. An empty journal does not prove a flat broker position; `status` reports the comparison. The first-seen equity baseline misses losses from earlier in that UTC day, and deposits or withdrawals distort the P&L difference. Set `KILL` on transfer days; because the kill switch also blocks status, verify the settled baseline with `status` right after the market opens once the switch is cleared, then revisit this baseline before live use. Dedicated P&L stream updates are not used for this field; unavailable summary values still block orders. A recorded intent is not a fill: a mismatch after rejection or partial fill needs human reconciliation. Simulated trading does not authorize a real account.
+Never drive buy or sell against TWS from this skill. The startup provider uses Raw symbology for `SPY=STK.SMART`; the default Simplified method resolves a different instrument ID. Account IDs and balances must never appear in output or wire recordings. Exchange holidays are not modeled: a holiday order may remain pending until timeout. An empty journal does not prove a flat broker position; `status` reports the comparison. The first-seen equity baseline misses losses from earlier in that UTC day, and deposits or withdrawals distort the P&L difference. Set `KILL` on transfer days; because the kill switch also blocks status, verify the settled baseline with `status` right after the market opens once the switch is cleared, then revisit this baseline before live use. Dedicated P&L stream updates are not used for this field; unavailable summary values still block orders. A recorded intent is not a fill. Zero-fill Denied/Rejected events remove its expected exposure, but do not free its key. Missing terminal evidence, timeout, partial fill, canceled, or expired orders may still require human reconciliation. Existing journals are not repaired by inference; old rejected intents without recorded outcomes remain conservative. Simulated trading does not authorize a real account.
