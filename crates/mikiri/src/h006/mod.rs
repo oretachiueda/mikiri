@@ -28,4 +28,5 @@ mod tests {
 
 pub mod daily;
 pub mod input;
+pub mod random;
 pub mod segments;
