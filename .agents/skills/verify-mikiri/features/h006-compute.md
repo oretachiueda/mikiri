@@ -17,7 +17,9 @@ target/release/h006-compute --histdata-dir <zip-directory> --spy <SPY.json> --st
 
 ## Driving it with the shell
 
-Build with `cargo build --locked --release -p mikiri --bin h006-compute`. Use only separately generated HistData-format synthetic ZIPs and synthetic Tiingo JSON. Run the dev command above and record its stdout, stderr, exit code, output sizes, and hashes. Check the manifest from inside the output directory with `shasum -a 256 -c SHA256SUMS`. A dev run must print `clock_check` before its final result path and manifest hash. Its synthetic output is not a verdict or permission to open real holdout data. There is no H006 drive script yet.
+Run `.agents/skills/verify-mikiri/drive-h006.sh`. It generates synthetic inputs, drives dev and an authorized synthetic holdout, checks the clock output and manifests, tests holdout refusals and tampering, and changes a 2025 bar to check byte-identical dev output. It also changes a future row inside the opened 2024 ZIP: calculation files stay byte-identical, while the recorded input hash and manifest change because the ZIP hash covers the whole file. The driver runs the Python recomputation when `stats/h006.py` exists; otherwise it prints `SKIP python recompute: stats/h006.py absent`. Evidence, including the input files and transcript, stays in `/tmp/mikiri-verify-h006-<id>/`. Only the driver's own `results/verify-h006-<id>/` directory is removed. The passing gates in its synthetic ledger are test fixtures, not a real verdict or authorization.
+
+To generate inputs separately, run `python3 .agents/skills/verify-mikiri/h006_synth.py --out <new-directory> [--seed N]`.
 
 ## Gotchas
 

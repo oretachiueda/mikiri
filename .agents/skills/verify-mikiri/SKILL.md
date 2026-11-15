@@ -45,7 +45,7 @@ Run `.agents/skills/verify-mikiri/drive-h004.sh` for both H004 stages, independe
 
 Run `.agents/skills/verify-mikiri/drive-h005.sh` for both H005 stages, independent Python comparisons, dev cutoff invariance across FX, rates, and SPY, authorization refusals, and tamper detection on synthetic inputs. Evidence stays in `/tmp/mikiri-verify-h005-<id>/`.
 
-Read `features/h006-compute.md` for H006 synthetic input, output, and guarded holdout verification. Its standalone drive script is not yet available.
+Run `.agents/skills/verify-mikiri/drive-h006.sh` for H006 synthetic dev, guarded holdout, refusal, tamper, and future-value checks. Python recomputation runs when `stats/h006.py` exists; otherwise the transcript reports it skipped. Evidence stays in `/tmp/mikiri-verify-h006-<id>/`.
 
 Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Drive its offline argument and connection-failure paths with `features/ib-probe.md`. A real connection requires human-run TWS and explicit authorization; the skill does not drive it.
 
@@ -71,7 +71,7 @@ Proof standards:
 
 ## Cleanup
 
-`drive.sh` deletes its own run directory, `results/verify-<id>`, when it exits. `drive-h005.sh` deletes only its own `results/verify-h005-<id>` directory when it exits. If that directory already exists, the script stops before it writes anything. The evidence directory stays. The shell failure recipes in `features/` write no result files. The pytest mismatch recipe makes a `results/h001-test-*` directory and deletes it when it ends. Never delete another directory under `results/` or `data/`.
+`drive.sh` deletes its own run directory, `results/verify-<id>`, when it exits. `drive-h006.sh` deletes only its own `results/verify-h006-<id>` directory and retains its evidence. `drive-h005.sh` deletes only its own `results/verify-h005-<id>` directory when it exits. If that directory already exists, the script stops before it writes anything. The evidence directory stays. The shell failure recipes in `features/` write no result files. The pytest mismatch recipe makes a `results/h001-test-*` directory and deletes it when it ends. Never delete another directory under `results/` or `data/`.
 
 ## Limits
 
