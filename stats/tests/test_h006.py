@@ -1,5 +1,6 @@
 import hashlib
 import io
+import json
 import math
 import zipfile
 from dataclasses import replace
@@ -510,6 +511,264 @@ def stopped_us_day(index, ymd, eu_min, exit_min, p_e, p_m, p_x):
         (ymd, 500, 0.99 * p_m, 0.991 * p_m, 0.985 * p_m, 0.99 * p_m),
         (ymd, exit_min, p_x, p_x, p_x, p_x),
     ]
+
+
+def spy_row(day, close, div=0.0, split=1.0):
+    return {"date": day, "close": close, "div_cash": div, "split_factor": split}
+
+
+def frame_of(rows):
+    return pd.DataFrame(
+        {
+            "date": [day for day, _, _ in rows],
+            "R": [ret for _, ret, _ in rows],
+            "leverage": [lev for _, _, lev in rows],
+        }
+    )
+
+
+def flat_spy(*days_, close=100.0):
+    return [spy_row(day, close) for day in days_]
+
+
+def test_tax_ledger_profit_loss_carry_expiry_and_order():
+    ledger = h.TaxLedger(0.2)
+    assert ledger.settle(2020, 100) == pytest.approx(20.0)
+    assert ledger.settle(2021, -50) == 0.0
+    assert ledger.settle(2022, 30) == 0.0
+    assert ledger.settle(2023, 40) == pytest.approx(4.0)
+    assert ledger.settle(2025, 10) == pytest.approx(2.0)
+    assert ledger.settle(2026, -10) == 0.0
+    assert ledger.settle(2027, -5) == 0.0
+    assert ledger.settle(2029, 12) == 0.0
+    assert ledger.settle(2030, 4) == pytest.approx(0.2)
+
+
+def test_accounts_profit_year_and_loss_year():
+    frame = frame_of(
+        [
+            (date(2019, 12, 2), 0.10, 2.0),
+            (date(2019, 12, 3), 0.10, 2.0),
+            (date(2020, 1, 2), -0.05, 2.0),
+            (date(2020, 1, 3), -0.05, 2.0),
+        ]
+    )
+    spy = flat_spy(date(2019, 12, 2), date(2020, 1, 3))
+    accounts, stats = h.account_segment(frame, spy, "recent")
+    assert list(accounts.columns) == list(h.ACCOUNT_COLUMNS)
+    assert accounts["equity_start"].tolist() == pytest.approx(
+        [1.0, 1.1, 1.1673385, 1.108971575]
+    )
+    assert accounts["equity_pretax"].tolist() == pytest.approx(
+        [1.1, 1.21, 1.1495, 1.092025]
+    )
+    tax_2019 = h.TAX_RATE * (0.10 + 1.1 * 0.10)
+    assert accounts["tax_paid"].tolist() == pytest.approx([0.0, tax_2019, 0.0, 0.0])
+    assert accounts["equity_end"].tolist() == pytest.approx(
+        [1.1, 1.21 - tax_2019, 1.1673385 * 0.95, 1.1673385 * 0.95 * 0.95]
+    )
+    assert stats["w"] == pytest.approx(float(accounts.iloc[-1]["equity_end"]))
+    assert stats["segment"] == "recent"
+    assert stats["max_leverage"] == 2.0
+    assert stats["max_leg_notional_to_equity"] == pytest.approx(2.0 * h.W_EU)
+    assert stats["psr_threshold"] == h.PSR_THRESHOLD
+    assert 0.0 < stats["psr"] < 1.0
+    elapsed = (date(2020, 1, 3) - date(2019, 12, 2)).days
+    assert stats["cagr_pretax"] == pytest.approx(1.092025 ** (365.0 / elapsed) - 1.0)
+    assert stats["cagr_aftertax"] == pytest.approx(
+        (1.1673385 * 0.95 * 0.95) ** (365.0 / elapsed) - 1.0
+    )
+    assert stats["drawdown_pretax"] == pytest.approx(1.0 - 1.092025 / 1.21)
+    assert stats["drawdown_aftertax"] == pytest.approx(1.0 - 1.05352299625 / 1.1673385)
+    expected_sr = (
+        math.sqrt(252.0)
+        * np.mean([0.1, 0.1, -0.05, -0.05])
+        / np.std([0.1, 0.1, -0.05, -0.05], ddof=1)
+    )
+    assert stats["sr"] == pytest.approx(float(expected_sr))
+
+
+def test_tax_carryforward_expiry_and_final_partial_year():
+    frame = frame_of(
+        [
+            (date(2010, 1, 4), -0.10, 1.0),
+            (date(2011, 1, 3), 0.05, 1.0),
+            (date(2015, 1, 5), 0.05, 1.0),
+        ]
+    )
+    spy = flat_spy(date(2007, 7, 2), date(2010, 1, 4), date(2015, 1, 5))
+    accounts, _ = h.account_segment(frame, spy, "dev")
+    assert accounts["tax_paid"].tolist() == pytest.approx(
+        [0.0, 0.0, h.TAX_RATE * (0.945 * 0.05)]
+    )
+    assert accounts["equity_end"].tolist() == pytest.approx(
+        [0.9, 0.945, 0.945 * 1.05 - h.TAX_RATE * (0.945 * 0.05)]
+    )
+
+
+def test_segment_restart_ignores_earlier_losses():
+    frame = frame_of(
+        [
+            (date(2007, 7, 2), 0.0, 1.0),
+            (date(2019, 3, 4), -0.10, 1.0),
+            (date(2020, 6, 1), 0.10, 1.0),
+            (date(2020, 6, 2), 0.0, 1.0),
+        ]
+    )
+    spy = [
+        spy_row(date(2007, 7, 2), 100.0),
+        spy_row(date(2010, 1, 4), 110.0, div=2.0),
+        spy_row(date(2015, 6, 1), 55.0, split=2.0),
+        spy_row(date(2020, 6, 1), 60.0),
+        spy_row(date(2024, 10, 31), 60.0),
+    ]
+    dev_accounts, dev_stats = h.account_segment(frame, spy, "dev")
+    recent_accounts, recent_stats = h.account_segment(frame, spy, "recent")
+    assert dev_accounts["tax_paid"].tolist() == pytest.approx([0.0, 0.0, 0.0, 0.0])
+    assert recent_accounts["tax_paid"].tolist() == pytest.approx(
+        [0.0, h.TAX_RATE * 0.10]
+    )
+    assert dev_accounts.iloc[0]["equity_start"] == 1.0
+    assert recent_accounts.iloc[0]["equity_start"] == 1.0
+    assert dev_accounts.iloc[-1]["equity_end"] == pytest.approx(0.99)
+    assert recent_accounts.iloc[-1]["equity_end"] == pytest.approx(
+        1.1 - 0.1 * h.TAX_RATE
+    )
+    shares = 1.0 / (1.0002 * 100.0)
+    shares = shares + shares * 2.0 / 110.0
+    shares = shares * 2.0
+    assert dev_stats["b"] == pytest.approx(shares * 60.0 * 0.9998)
+    assert recent_stats["b"] == pytest.approx(0.9998 / 1.0002)
+
+
+def test_segment_errors_psr_and_ruin():
+    spy = flat_spy(date(2019, 12, 2), date(2020, 1, 3))
+    one_day = frame_of([(date(2019, 12, 2), 0.05, 1.0)])
+    with pytest.raises(ValueError, match="PSR"):
+        h.account_segment(one_day, spy, "recent")
+    constant = frame_of(
+        [(date(2019, 12, 2), 0.05, 1.0), (date(2019, 12, 3), 0.05, 1.0)]
+    )
+    with pytest.raises(ValueError, match="PSR"):
+        h.account_segment(constant, spy, "recent")
+    ruined = frame_of([(date(2019, 12, 2), -1.0, 1.0), (date(2019, 12, 3), 0.05, 1.0)])
+    with pytest.raises(ValueError, match="equity ruined"):
+        h.account_segment(ruined, spy, "recent")
+    no_leverage = frame_of(
+        [(date(2019, 11, 1), None, None), (date(2019, 11, 4), 0.01, 1.0)]
+    )
+    with pytest.raises(ValueError, match="leverage"):
+        h.account_segment(no_leverage, spy, "recent")
+    empty = frame_of([(date(2007, 1, 3), 0.01, 1.0)])
+    with pytest.raises(ValueError, match="no calculation days"):
+        h.account_segment(empty, spy, "recent")
+    with pytest.raises(ValueError, match="no SPY rows"):
+        h.account_segment(constant, flat_spy(date(2026, 10, 30)), "recent")
+
+
+def alternating(start, count, up, down):
+    dates = weekday_dates(start, count)
+    return frame_of(
+        [(day, up if index % 2 else down, 1.0) for index, day in enumerate(dates)]
+    )
+
+
+def test_run_segments_and_gates():
+    frame = pd.concat(
+        [
+            alternating(date(2007, 7, 2), 100, 0.01, -0.004),
+            alternating(date(2019, 11, 1), 40, 0.008, -0.003),
+            alternating(date(2024, 11, 3), 40, 0.008, -0.003),
+        ],
+        ignore_index=True,
+    )
+    spy = flat_spy(
+        date(2007, 7, 2),
+        date(2019, 11, 1),
+        date(2024, 10, 31),
+        date(2024, 11, 4),
+        date(2026, 10, 30),
+    )
+    accounts, stats, gates = h.run_segments(frame, spy, "holdout")
+    assert list(accounts.columns) == list(h.ACCOUNT_COLUMNS)
+    assert accounts["segment"].tolist().count("dev") == 140
+    assert len(accounts) == 220
+    assert set(stats) == {"dev", "recent", "holdout"}
+    assert gates == {"A": True, "B": True, "C": True, "H": True}
+    assert stats["dev"]["w"] == pytest.approx(
+        float(accounts[accounts["segment"] == "dev"].iloc[-1]["equity_end"])
+    )
+
+    dev_only, dev_stats, dev_gates = h.run_segments(frame, spy, "dev")
+    assert set(dev_stats) == {"dev", "recent"}
+    assert len(dev_only) == 180 and dev_gates["H"] is None
+
+    booming = [
+        spy_row(date(2007, 7, 2), 100.0),
+        spy_row(date(2019, 11, 1), 1000.0),
+        spy_row(date(2024, 10, 31), 1000.0),
+        spy_row(date(2024, 11, 4), 1000.0),
+        spy_row(date(2026, 10, 30), 1000.0),
+    ]
+    _, weak_stats, weak_gates = h.run_segments(frame, booming, "holdout")
+    assert weak_gates["A"] is False and weak_gates["C"] is True
+    assert weak_stats["dev"]["b"] == pytest.approx(10.0 * 0.9998 / 1.0002)
+
+    losing = pd.concat(
+        [
+            alternating(date(2007, 7, 2), 100, -0.004, -0.010),
+            alternating(date(2019, 11, 1), 40, 0.008, -0.003),
+            alternating(date(2024, 11, 3), 40, -0.008, -0.012),
+        ],
+        ignore_index=True,
+    )
+    _, _, losing_gates = h.run_segments(losing, spy, "holdout")
+    assert losing_gates["B"] is False and losing_gates["H"] is False
+
+
+def test_read_spy_cutoff_and_validation(tmp_path):
+    rows = [
+        {"date": "2024-10-31", "close": 100.0, "divCash": 0.0, "splitFactor": 1.0},
+        {"date": "2024-11-01", "close": 101.0, "divCash": 0.0, "splitFactor": 1.0},
+        {"date": "2026-10-30", "close": 102.0, "divCash": 0.0, "splitFactor": 1.0},
+        {"date": "2026-10-31", "close": 103.0, "divCash": 0.0, "splitFactor": 1.0},
+    ]
+    path = tmp_path / "SPY.json"
+    path.write_text(json.dumps(rows))
+    dev_rows = h.read_spy(path, "dev")
+    holdout_rows = h.read_spy(path, "holdout")
+    assert [row["date"] for row in dev_rows] == [date(2024, 10, 31)]
+    assert [row["date"] for row in holdout_rows] == [
+        date(2024, 10, 31),
+        date(2024, 11, 1),
+        date(2026, 10, 30),
+    ]
+    assert dev_rows[0]["close"] == 100.0 and dev_rows[0]["div_cash"] == 0.0
+
+    def write(entry):
+        path.write_text(json.dumps([entry]))
+        return path
+
+    base = {"date": "2024-10-31", "close": 100.0, "divCash": 0.0, "splitFactor": 1.0}
+    with pytest.raises(ValueError, match="non-finite SPY"):
+        h.read_spy(write({**base, "close": float("nan")}), "dev")
+    with pytest.raises(ValueError, match="non-positive SPY"):
+        h.read_spy(write({**base, "close": 0.0}), "dev")
+    with pytest.raises(ValueError, match="strictly increasing"):
+        path.write_text(json.dumps([rows[0], rows[0]]))
+        h.read_spy(path, "dev")
+    with pytest.raises(ValueError, match="non-empty JSON array"):
+        path.write_text("[]")
+        h.read_spy(path, "dev")
+    with pytest.raises(ValueError, match="no SPY rows"):
+        h.read_spy(
+            write(
+                {"date": "2026-12-31", "close": 1.0, "divCash": 0.0, "splitFactor": 1.0}
+            ),
+            "dev",
+        )
+    with pytest.raises(ValueError, match="invalid stage"):
+        h.read_spy(path, "run")
 
 
 def test_daily_legs_layout_and_preparation_period():

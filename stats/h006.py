@@ -4,11 +4,16 @@ Unit 1: HistData zip input, zoneinfo clock handling, outlier cleaning, the
 R1 clock check, and computation days with boundary minutes and prices.
 Unit 2: the S3 stop walk per leg and the per-day table (sigma, u, sigma_hat,
 leverage, R) with the days.parquet column layout.
+Unit 3: segments with the tax ledger and pretax path, the SPY baseline, PSR,
+and the A/B/C/H gates with the accounts.parquet column layout.
 """
 
 import hashlib
 import io
+import itertools
+import json
 import math
+import statistics
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -17,6 +22,9 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+
+from h001 import psr
+from h005 import benchmark
 
 NY = ZoneInfo("America/New_York")
 DUB = ZoneInfo("Europe/Dublin")
@@ -607,3 +615,194 @@ def daily_legs(days: list[Day], pip: float = 0.4, target: float = 0.30) -> pd.Da
         nostop_history["us"].append(legs["us"]["r_nostop"])
         u_history.append(u)
     return pd.DataFrame(rows, columns=DAY_COLUMNS)
+
+
+TAX_RATE = 0.20315
+PSR_THRESHOLD = 1 - 0.05 / 6
+SEGMENTS = {
+    "dev": (date(2007, 7, 2), date(2024, 10, 31)),
+    "recent": (date(2019, 11, 1), date(2024, 10, 31)),
+    "holdout": (date(2024, 11, 1), date(2026, 10, 30)),
+}
+STAGE_SEGMENTS = {"dev": ("dev", "recent"), "holdout": ("dev", "recent", "holdout")}
+SPY_CUTOFF = {"dev": date(2024, 10, 31), "holdout": date(2026, 10, 30)}
+ACCOUNT_COLUMNS = (
+    "segment",
+    "date",
+    "equity_start",
+    "R",
+    "tax_paid",
+    "equity_end",
+    "equity_pretax",
+)
+
+
+def read_spy(path: Path, stage: str) -> list[dict]:
+    """Tiingo daily SPY JSON rows, dropped past the stage cutoff before parsing."""
+    if stage not in SPY_CUTOFF:
+        raise ValueError("invalid stage")
+    rows = json.loads(path.read_text())
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("SPY file must be a non-empty JSON array")
+    cutoff = SPY_CUTOFF[stage]
+    parsed: list[dict] = []
+    dates: list[date] = []
+    for row in rows:
+        observed = date.fromisoformat(str(row["date"])[:10])
+        if observed > cutoff:
+            continue
+        dates.append(observed)
+        entry = {
+            "date": observed,
+            "close": float(row["close"]),
+            "div_cash": float(row["divCash"]),
+            "split_factor": float(row["splitFactor"]),
+        }
+        numbers = (entry["close"], entry["div_cash"], entry["split_factor"])
+        if not all(math.isfinite(value) for value in numbers):
+            raise ValueError(f"non-finite SPY value on {observed}")
+        if entry["close"] <= 0:
+            raise ValueError(f"non-positive SPY close on {observed}")
+        parsed.append(entry)
+    if not parsed:
+        raise ValueError("no SPY rows within the stage cutoff")
+    gaps = [later - earlier for earlier, later in itertools.pairwise(dates)]
+    if any(gap <= timedelta(0) for gap in gaps):
+        raise ValueError("SPY dates must be strictly increasing")
+    return parsed
+
+
+class TaxLedger:
+    """Calendar-year income tax with the 3-year oldest-first loss carryforward."""
+
+    def __init__(self, rate: float = TAX_RATE):
+        self.rate = rate
+        self.losses: list[list[float]] = []
+
+    def settle(self, year: int, income: float) -> float:
+        self.losses = [loss for loss in self.losses if 1 <= year - loss[0] <= 3]
+        if income < 0:
+            self.losses.append([year, -income])
+            return 0.0
+        for loss in self.losses:
+            used = min(income, loss[1])
+            income -= used
+            loss[1] -= used
+        return income * self.rate
+
+
+def _drawdown(path: list[float]) -> float:
+    peak = 1.0
+    worst = 0.0
+    for value in path:
+        peak = max(peak, value)
+        worst = max(worst, 1.0 - value / peak)
+    return worst
+
+
+def account_segment(
+    frame: pd.DataFrame,
+    spy_rows: list[dict],
+    name: str,
+    tax_rate: float = TAX_RATE,
+) -> tuple[pd.DataFrame, dict]:
+    """One segment's accounts and judgment statistics; equity restarts at 1."""
+    if name not in SEGMENTS:
+        raise ValueError("invalid segment")
+    first, last = SEGMENTS[name]
+    rows = frame[(frame["date"] >= first) & (frame["date"] <= last)]
+    days = list(rows["date"])
+    if not days:
+        raise ValueError(f"segment {name} has no calculation days")
+    if pd.isna(rows.iloc[0]["leverage"]):
+        raise ValueError(f"segment {name} starts before leverage exists")
+    ledger = TaxLedger(tax_rate)
+    rets = [float(value) for value in rows["R"]]
+    accounts: list[dict] = []
+    pretax_path: list[float] = []
+    equity = 1.0
+    pretax = 1.0
+    year_income = 0.0
+    for position, (day, ret) in enumerate(zip(days, rets, strict=True)):
+        year_income += equity * ret
+        year_end = position + 1 == len(days) or days[position + 1].year != day.year
+        tax = ledger.settle(day.year, year_income) if year_end else 0.0
+        if year_end:
+            year_income = 0.0
+        start = equity
+        equity = equity * (1.0 + ret) - tax
+        if not math.isfinite(equity) or equity <= 0:
+            raise ValueError(f"segment {name} equity ruined on {day}")
+        pretax *= 1.0 + ret
+        pretax_path.append(pretax)
+        accounts.append(
+            {
+                "segment": name,
+                "date": day,
+                "equity_start": start,
+                "R": ret,
+                "tax_paid": tax,
+                "equity_end": equity,
+                "equity_pretax": pretax,
+            }
+        )
+    spy_slice = [bar for bar in spy_rows if first <= bar["date"] <= last]
+    if not spy_slice:
+        raise ValueError(f"segment {name} has no SPY rows")
+    values, _ = benchmark(spy_slice)
+    elapsed = (days[-1] - days[0]).days
+    leverage = rows["leverage"].astype(float)
+    max_leverage = float(leverage.max())
+
+    def cagr(final: float) -> float | None:
+        return final ** (365.0 / elapsed) - 1.0 if elapsed > 0 else None
+
+    psr_value = psr(rets)
+    stats = {
+        "segment": name,
+        "w": equity,
+        "b": values[-1],
+        "sr": math.sqrt(252.0) * statistics.fmean(rets) / statistics.stdev(rets),
+        "cagr_pretax": cagr(pretax_path[-1]),
+        "cagr_aftertax": cagr(equity),
+        "drawdown_pretax": _drawdown(pretax_path),
+        "drawdown_aftertax": _drawdown([row["equity_end"] for row in accounts]),
+        "max_leverage": max_leverage,
+        "max_leg_notional_to_equity": max_leverage * W_EU,
+        "psr": psr_value,
+        "psr_threshold": PSR_THRESHOLD,
+    }
+    return pd.DataFrame(accounts, columns=ACCOUNT_COLUMNS), stats
+
+
+def evaluate_gates(segment_stats: dict[str, dict]) -> dict[str, bool | None]:
+    """A: dev after-tax W > B. B: dev PSR. C: recent W > B. H: holdout W > B."""
+    dev = segment_stats["dev"]
+    gates: dict[str, bool | None] = {
+        "A": bool(dev["w"] > dev["b"]),
+        "B": bool(dev["psr"] >= PSR_THRESHOLD),
+        "C": bool(segment_stats["recent"]["w"] > segment_stats["recent"]["b"]),
+        "H": None,
+    }
+    if "holdout" in segment_stats:
+        holdout = segment_stats["holdout"]
+        gates["H"] = bool(holdout["w"] > holdout["b"])
+    return gates
+
+
+def run_segments(
+    frame: pd.DataFrame,
+    spy_rows: list[dict],
+    stage: str,
+    tax_rate: float = TAX_RATE,
+) -> tuple[pd.DataFrame, dict[str, dict], dict[str, bool | None]]:
+    """All of the stage's segments with accounts, statistics, and gates."""
+    if stage not in STAGE_SEGMENTS:
+        raise ValueError("invalid stage")
+    tables: list[pd.DataFrame] = []
+    stats: dict[str, dict] = {}
+    for name in STAGE_SEGMENTS[stage]:
+        accounts, segment = account_segment(frame, spy_rows, name, tax_rate)
+        tables.append(accounts)
+        stats[name] = segment
+    return pd.concat(tables, ignore_index=True), stats, evaluate_gates(stats)
