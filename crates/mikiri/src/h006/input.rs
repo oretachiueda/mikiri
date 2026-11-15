@@ -247,7 +247,7 @@ pub fn days(bars: &[Bar]) -> Result<Vec<Day>> {
     Ok(days)
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct SeasonClock {
     pub top: Vec<(i16, f64)>,
     pub sunday_median: f64,

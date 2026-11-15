@@ -32,7 +32,7 @@ impl Segment {
             Self::Holdout => "holdout",
         }
     }
-    fn bounds(self) -> (Date, Date) {
+    pub(crate) fn bounds(self) -> (Date, Date) {
         match self {
             Self::Dev => (date(2007, 7, 2), date(2024, 10, 31)),
             Self::Recent => (date(2019, 11, 1), date(2024, 10, 31)),
@@ -175,6 +175,18 @@ pub fn sharpe(values: &[f64]) -> Result<f64> {
 }
 
 pub fn account(segment: Segment, days: &[Daily], rate: f64) -> Result<Vec<AccountDay>> {
+    let (rows, ruined) = account_report(segment, days, rate)?;
+    if ruined.is_some() {
+        return Err("invalid or ruined equity".into());
+    }
+    Ok(rows)
+}
+
+pub(crate) fn account_report(
+    segment: Segment,
+    days: &[Daily],
+    rate: f64,
+) -> Result<(Vec<AccountDay>, Option<Date>)> {
     if !rate.is_finite() || !(0.0..=1.0).contains(&rate) {
         return Err("invalid tax rate".into());
     }
@@ -201,13 +213,11 @@ pub fn account(segment: Segment, days: &[Daily], rate: f64) -> Result<Vec<Accoun
         income += pnl;
         equity += pnl;
         pretax *= 1.0 + r;
-        if !income.is_finite()
-            || !equity.is_finite()
-            || equity <= 0.0
-            || !pretax.is_finite()
-            || pretax <= 0.0
-        {
-            return Err("invalid or ruined equity".into());
+        if !income.is_finite() || !equity.is_finite() || !pretax.is_finite() {
+            return Err("nonfinite equity".into());
+        }
+        if equity <= 0.0 || pretax <= 0.0 {
+            return Ok((rows, Some(day.date)));
         }
         let year_end = i + 1 == days.len() || days[i + 1].date.year() != day.date.year();
         let paid = if year_end {
@@ -218,8 +228,11 @@ pub fn account(segment: Segment, days: &[Daily], rate: f64) -> Result<Vec<Accoun
             0.0
         };
         equity -= paid;
-        if !equity.is_finite() || equity <= 0.0 {
-            return Err("cannot pay tax from equity".into());
+        if !equity.is_finite() {
+            return Err("nonfinite equity".into());
+        }
+        if equity <= 0.0 {
+            return Ok((rows, Some(day.date)));
         }
         rows.push(AccountDay {
             segment,
@@ -231,10 +244,10 @@ pub fn account(segment: Segment, days: &[Daily], rate: f64) -> Result<Vec<Accoun
             equity_pretax: pretax,
         });
     }
-    Ok(rows)
+    Ok((rows, None))
 }
 
-fn drawdown(values: impl Iterator<Item = f64>) -> f64 {
+pub(crate) fn drawdown(values: impl Iterator<Item = f64>) -> f64 {
     let mut peak: f64 = 1.0;
     let mut worst: f64 = 0.0;
     for value in values {
