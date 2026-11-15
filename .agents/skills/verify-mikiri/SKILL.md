@@ -1,6 +1,6 @@
 ---
 name: verify-mikiri
-description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, h005-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, stats/h005.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
+description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, h005-compute, h006-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, stats/h005.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
 ---
 
 # Verify Mikiri
@@ -19,12 +19,12 @@ Nothing stays running. Launch is one build from the repository root.
 cargo build --locked -p mikiri --bins
 ```
 
-The binaries are `target/debug/h001-compute`, `target/debug/h002-compute`, `target/debug/h003-compute`, `target/debug/h004-compute`, `target/debug/h005-compute`, and `target/debug/fetch-tiingo`. The Python batches need no build. `uv run --locked --project stats` creates its environment on first use.
+The binaries are `target/debug/h001-compute`, `target/debug/h002-compute`, `target/debug/h003-compute`, `target/debug/h004-compute`, `target/debug/h005-compute`, `target/debug/h006-compute`, and `target/debug/fetch-tiingo`. The Python batches need no build. `uv run --locked --project stats` creates its environment on first use.
 
 ## Doctor
 
 ```bash
-command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/h002-compute && test -x target/debug/h003-compute && test -x target/debug/h004-compute && test -x target/debug/h005-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
+command -v cargo uv shasum >/dev/null && git check-ignore -q results/x && git check-ignore -q data/x && test -x target/debug/h001-compute && test -x target/debug/h002-compute && test -x target/debug/h003-compute && test -x target/debug/h004-compute && test -x target/debug/h005-compute && test -x target/debug/h006-compute && test -x target/debug/fetch-tiingo && echo doctor-ok
 ```
 
 `doctor-ok` means that the tools exist, the binaries are built, and git ignores the directories that a drive writes to. If the line prints nothing, fix that before you drive.
@@ -44,6 +44,8 @@ Run `.agents/skills/verify-mikiri/drive-h003.sh` to verify H003 compute and inde
 Run `.agents/skills/verify-mikiri/drive-h004.sh` for both H004 stages, independent Python comparisons, dev cutoff invariance and refusal paths on synthetic Tiingo arrays. Evidence stays in `/tmp/mikiri-verify-h004-<id>/`.
 
 Run `.agents/skills/verify-mikiri/drive-h005.sh` for both H005 stages, independent Python comparisons, dev cutoff invariance across FX, rates, and SPY, authorization refusals, and tamper detection on synthetic inputs. Evidence stays in `/tmp/mikiri-verify-h005-<id>/`.
+
+Read `features/h006-compute.md` for H006 synthetic input, output, and guarded holdout verification. Its standalone drive script is not yet available.
 
 Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Drive its offline argument and connection-failure paths with `features/ib-probe.md`. A real connection requires human-run TWS and explicit authorization; the skill does not drive it.
 

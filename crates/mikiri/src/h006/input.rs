@@ -158,13 +158,15 @@ pub fn clean(bars: &[Bar]) -> (Vec<Bar>, Vec<DateTime>) {
     let mut removed = Vec::new();
     for (i, b) in bars.iter().enumerate() {
         let discard = if i >= 30 && i + 30 < bars.len() {
-            let mut close: Vec<_> = bars[i - 30..i]
-                .iter()
-                .chain(&bars[i + 1..=i + 30])
-                .map(|x| x.close)
-                .collect();
-            close.sort_unstable_by(f64::total_cmp);
-            let median = (close[29] + close[30]) / 2.0;
+            let mut close = [0.0; 60];
+            for (slot, bar) in close
+                .iter_mut()
+                .zip(bars[i - 30..i].iter().chain(&bars[i + 1..=i + 30]))
+            {
+                *slot = bar.close;
+            }
+            let (lower, upper, _) = close.select_nth_unstable_by(30, f64::total_cmp);
+            let median = (lower.iter().copied().fold(f64::NEG_INFINITY, f64::max) + *upper) / 2.0;
             median > 0.0
                 && [b.open, b.high, b.low, b.close]
                     .iter()

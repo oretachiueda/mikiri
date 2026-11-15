@@ -13,6 +13,7 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 - [`h004-recompute.md`](h004-recompute.md): independently compare H004 indicators, accounting and gates in Python.
 - [`h005-compute.md`](h005-compute.md): compute H005 on synthetic FX, rate, and SPY inputs with guarded stages.
 - [`h005-recompute.md`](h005-recompute.md): independently recompute H005 and compare all outputs and gates in Python.
+- [`h006-compute.md`](h006-compute.md): compute H006 on synthetic minute ZIPs with guarded stages.
 - [`fetch-tiingo.md`](fetch-tiingo.md): download daily bars from Tiingo.
 
 - [`ib-probe.md`](ib-probe.md): validate arguments and fail safely without a TWS connection; live demo connection is human-run.
