@@ -1,9 +1,12 @@
 import hashlib
 import io
+import math
 import zipfile
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import h006 as h
@@ -368,3 +371,309 @@ def test_summer_day_has_edt_minutes_and_dst_flag():
     assert day.us_dst is True
     assert (day.eu_entry_min, day.us_exit_min) == (120, 885)
     assert day.eu_entry_price == pytest.approx(1.30)
+
+
+def walk_arrays(entries):
+    mins = np.array([e[0] for e in entries], dtype=np.int64)
+    return (
+        mins,
+        np.array([e[2] for e in entries]),
+        np.array([e[3] for e in entries]),
+        np.array([e[1] for e in entries]),
+    )
+
+
+def test_walk_long_gap_fills_at_open():
+    entry, sigma = 1.30, 0.01
+    arrays = walk_arrays([(480, entry, entry, entry), (500, 1.283, 1.284, 1.283)])
+    walk = h.walk_window(*arrays, 480, 345, entry, sigma, direction=1)
+    assert walk.stopped and walk.exit_min == 500
+    assert walk.exit_price == pytest.approx(1.283)
+    assert walk.exit_price is not None
+    assert walk.exit_price < entry * math.exp(-sigma)
+
+
+def test_walk_long_stops_at_level_price():
+    entry, sigma = 1.30, 0.01
+    arrays = walk_arrays(
+        [(480, entry, entry, entry), (500, 1.29, 1.295, entry * math.exp(-0.0105))]
+    )
+    walk = h.walk_window(*arrays, 480, 345, entry, sigma, direction=1)
+    assert walk.stopped and walk.exit_min == 500
+    assert walk.exit_price == pytest.approx(entry * math.exp(-sigma))
+
+
+def test_walk_flag_moves_stop_from_the_next_bar():
+    entry, sigma = 1.30, 0.01
+    arrays = walk_arrays(
+        [
+            (480, entry, entry, entry),
+            (510, entry, entry * math.exp(0.0105), entry * math.exp(-0.005)),
+            (
+                520,
+                entry * math.exp(0.001),
+                entry * math.exp(0.001),
+                entry * math.exp(-0.004),
+            ),
+        ]
+    )
+    walk = h.walk_window(*arrays, 480, 345, entry, sigma, direction=1)
+    assert walk.stopped and walk.exit_min == 520 and walk.flag_min == 510
+    assert walk.exit_price == pytest.approx(entry)
+
+
+def test_walk_short_stop_and_flag():
+    entry, sigma = 1.30, 0.01
+    arrays = walk_arrays(
+        [(120, entry, entry, entry), (200, 1.31, entry * math.exp(0.0105), 1.3095)]
+    )
+    walk = h.walk_window(*arrays, 120, 360, entry, sigma, direction=-1)
+    assert walk.stopped and walk.exit_min == 200
+    assert walk.exit_price == pytest.approx(entry * math.exp(sigma))
+    arrays = walk_arrays(
+        [
+            (120, entry, entry, entry),
+            (210, 1.30, 1.30, entry * math.exp(-0.0105)),
+            (
+                220,
+                entry * math.exp(-0.001),
+                entry * math.exp(0.004),
+                entry * math.exp(-0.001),
+            ),
+        ]
+    )
+    walk = h.walk_window(*arrays, 120, 360, entry, sigma, direction=-1)
+    assert walk.stopped and walk.exit_min == 220 and walk.flag_min == 210
+    assert walk.exit_price == pytest.approx(entry)
+
+
+def test_walk_time_exit_excludes_boundary_bar_and_no_stop_mode():
+    entry, sigma = 1.30, 0.01
+    arrays = walk_arrays(
+        [(480, entry, entry, entry), (600, 1.29, 1.29, 1.2905), (825, 1.20, 1.25, 1.20)]
+    )
+    walk = h.walk_window(*arrays, 480, 345, entry, sigma, direction=1)
+    assert not walk.stopped and walk.exit_min == 825 and walk.exit_price is None
+    assert walk.flag_min is None and walk.double_touches == 0
+    idle = h.walk_window(*arrays, 480, 345, entry, sigma, direction=1, use_stop=False)
+    assert not idle.stopped and idle.exit_min == 825
+
+
+def test_walk_counts_double_touches_and_optimistic_agrees():
+    entry, sigma = 1.30, 0.01
+    arrays = walk_arrays(
+        [
+            (480, entry, entry, entry),
+            (500, 1.30, entry * math.exp(0.0105), entry * math.exp(-0.0105)),
+        ]
+    )
+    walk = h.walk_window(*arrays, 480, 345, entry, sigma, direction=1)
+    assert walk.double_touches == 1 and walk.optimistic_matches
+    assert walk.exit_price == pytest.approx(entry * math.exp(-sigma))
+
+
+def weekday_dates(start, count):
+    dates, current = [], start
+    while len(dates) < count:
+        if current.weekday() < 5:
+            dates.append(current)
+        current += timedelta(days=1)
+    return dates
+
+
+def synth_bars(count, craft=None):
+    rows = []
+    for index, day in enumerate(weekday_dates(date(2024, 1, 8), count)):
+        ymd = day.year * 10000 + day.month * 100 + day.day
+        eu_min, exit_min = h.ny_minutes(day)
+        p_e, p_m = 1.30, 1.30 + 0.001 * (index % 17)
+        p_x = p_m + 0.0005 * (index % 5)
+        default = [
+            (ymd, eu_min, p_e, p_e, p_e, p_e),
+            (ymd, 480, p_m, p_m, p_m, p_m),
+            (ymd, exit_min, p_x, p_x, p_x, p_x),
+        ]
+        crafted = craft(index, ymd, eu_min, exit_min, p_e, p_m, p_x) if craft else None
+        rows += crafted if crafted is not None else default
+    return make_bars(rows)
+
+
+def synth_days(count, craft=None):
+    return h.computation_days(synth_bars(count, craft))[0]
+
+
+def stopped_us_day(index, ymd, eu_min, exit_min, p_e, p_m, p_x):
+    """Day whose US leg gaps below its stop at minute 500 and fills at open."""
+    return [
+        (ymd, eu_min, p_e, p_e, p_e, p_e),
+        (ymd, 480, p_m, p_m, p_m, p_m),
+        (ymd, 500, 0.99 * p_m, 0.991 * p_m, 0.985 * p_m, 0.99 * p_m),
+        (ymd, exit_min, p_x, p_x, p_x, p_x),
+    ]
+
+
+def test_daily_legs_layout_and_preparation_period():
+    frame = h.daily_legs(
+        synth_days(
+            65, lambda i, *unused: stopped_us_day(i, *unused) if i == 60 else None
+        )
+    )
+    assert list(frame.columns) == list(h.DAY_COLUMNS)
+    first = frame.iloc[0]
+    assert first["us_entry_min"] == 480 and first["eu_entry_min"] == 120
+    assert not first["eu_stopped"] and not first["us_stopped"]
+    assert (
+        first["eu_exit_min"] == 480
+        and first["us_exit_min"] == first["us_exit_min_boundary"]
+    )
+    assert first["eu_exit_price"] == pytest.approx(first["eu_boundary_exit_price"])
+    assert first["eu_r"] == pytest.approx(first["eu_r_nostop"])
+    for column in (
+        "eu_sigma",
+        "eu_stop_initial",
+        "eu_flag_min",
+        "sigma_hat",
+        "leverage",
+        "R",
+    ):
+        assert pd.isna(frame.iloc[0][column]) and pd.isna(frame.iloc[59][column])
+    walked = frame.iloc[60]
+    assert walked["eu_sigma"] > 0 and walked["us_sigma"] > 0
+    assert walked["eu_stop_initial"] == pytest.approx(
+        walked["eu_entry_price"] * math.exp(walked["eu_sigma"])
+    )
+    assert walked["us_stop_initial"] == pytest.approx(
+        walked["us_entry_price"] * math.exp(-walked["us_sigma"])
+    )
+    assert bool(walked["us_stopped"]) and walked["us_exit_min"] == 500
+    assert walked["us_exit_price"] == pytest.approx(0.99 * walked["us_entry_price"])
+    assert walked["us_r_nostop"] == pytest.approx(
+        math.log(walked["us_boundary_exit_price"] / walked["us_entry_price"])
+    )
+
+
+def test_sigma_windows_exclude_today_and_need_sixty_days():
+    frame = h.daily_legs(synth_days(61))
+    expected = float(np.std(frame["eu_r_nostop"][:60], ddof=1))
+    assert frame.iloc[60]["eu_sigma"] == pytest.approx(expected)
+    assert frame.iloc[60]["sigma_hat"] == pytest.approx(
+        math.sqrt(252.0) * float(np.std(frame["u"][:60], ddof=1))
+    )
+    assert pd.isna(frame.iloc[59]["eu_sigma"])
+
+    def bump(index, ymd, eu_min, exit_min, p_e, p_m, p_x):
+        if index != 60:
+            return None
+        p_m = 1.35
+        return [
+            (ymd, eu_min, p_e, p_e, p_e, p_e),
+            (ymd, 480, p_m, p_m, p_m, p_m),
+            (ymd, exit_min, p_m + 0.001, p_m + 0.001, p_m + 0.001, p_m + 0.001),
+        ]
+
+    moved = h.daily_legs(synth_days(61, bump))
+    assert moved.iloc[60]["eu_sigma"] == pytest.approx(expected)
+    assert moved.iloc[60]["eu_r_nostop"] != pytest.approx(frame.iloc[60]["eu_r_nostop"])
+
+
+def test_u_leverage_and_R_formulas():
+    frame = h.daily_legs(
+        synth_days(
+            65, lambda i, *unused: stopped_us_day(i, *unused) if i == 62 else None
+        )
+    )
+    expected_u = h.W_EU * frame["eu_r"] + h.W_US * frame["us_r"]
+    assert np.allclose(frame["u"], expected_u, rtol=0, atol=1e-15)
+    for position in (60, 62, 64):
+        sigma_hat = math.sqrt(252.0) * float(
+            np.std(frame["u"][position - 60 : position], ddof=1)
+        )
+        assert frame.iloc[position]["sigma_hat"] == pytest.approx(sigma_hat)
+        leverage = min(0.30 / sigma_hat, h.LEVERAGE_CAP)
+        assert frame.iloc[position]["leverage"] == pytest.approx(leverage)
+        expected_r = leverage * (
+            h.W_EU * (frame.iloc[position]["eu_a"] - frame.iloc[position]["eu_c"])
+            + h.W_US * (frame.iloc[position]["us_a"] - frame.iloc[position]["us_c"])
+        )
+        assert frame.iloc[position]["R"] == pytest.approx(expected_r)
+
+
+def test_future_bars_leave_earlier_days_unchanged():
+    baseline = h.daily_legs(synth_days(70))
+
+    def scramble(index, ymd, eu_min, exit_min, p_e, p_m, p_x):
+        if index < 66:
+            return None
+        return [
+            (ymd, eu_min, p_e * 1.05, p_e * 1.05, p_e * 1.05, p_e * 1.05),
+            (ymd, 480, p_m * 1.05, p_m * 1.05, p_m * 1.05, p_m * 1.05),
+            (ymd, exit_min, p_x * 1.05, p_x * 1.05, p_x * 1.05, p_x * 1.05),
+        ]
+
+    changed = h.daily_legs(synth_days(70, scramble))
+    pd.testing.assert_frame_equal(
+        baseline.iloc[:66].reset_index(drop=True),
+        changed.iloc[:66].reset_index(drop=True),
+    )
+    assert not changed.iloc[66:].equals(baseline.iloc[66:])
+
+
+def test_missing_entry_bar_uses_fallback_price_but_walks_from_boundary():
+    def craft(index, ymd, eu_min, exit_min, p_e, p_m, p_x):
+        if index != 60:
+            return None
+        q = 1.28
+        return [
+            (ymd, eu_min, p_e, p_e, p_e, p_e),
+            (ymd, 479, q, q, q, q),
+            (ymd, 500, 0.99 * q, 0.991 * q, 0.985 * q, 0.99 * q),
+            (ymd, exit_min, p_x, p_x, p_x, p_x),
+        ]
+
+    frame = h.daily_legs(synth_days(61, craft))
+    row = frame.iloc[60]
+    assert bool(row["us_entry_fallback"])
+    assert row["us_entry_price"] == pytest.approx(1.28)
+    assert row["eu_boundary_exit_price"] == pytest.approx(1.28)
+    assert bool(row["us_stopped"]) and row["us_exit_min"] == 500
+    assert row["us_exit_price"] == pytest.approx(0.99 * 1.28)
+
+
+def test_cost_uses_the_fill_price():
+    frame = h.daily_legs(
+        synth_days(
+            61, lambda i, *unused: stopped_us_day(i, *unused) if i == 60 else None
+        )
+    )
+    row = frame.iloc[60]
+    half = 0.4 / 2 * 1e-4
+    assert row["us_c"] == pytest.approx(
+        half / row["us_entry_price"] + half / row["us_exit_price"]
+    )
+    doubled = h.daily_legs(
+        synth_days(
+            61, lambda i, *unused: stopped_us_day(i, *unused) if i == 60 else None
+        ),
+        pip=0.8,
+    )
+    assert doubled.iloc[60]["us_c"] == pytest.approx(2 * row["us_c"])
+    assert doubled.iloc[60]["us_a"] == pytest.approx(row["us_a"])
+    assert doubled.iloc[60]["us_r"] == pytest.approx(row["us_r"])
+
+
+def test_flat_prices_raise_sigma_leg_error():
+    rows = []
+    for day in weekday_dates(date(2024, 1, 8), 61):
+        ymd = day.year * 10000 + day.month * 100 + day.day
+        eu_min, exit_min = h.ny_minutes(day)
+        for minute in (eu_min, 480, exit_min):
+            rows.append((ymd, minute, 1.30, 1.30, 1.30, 1.30))
+    with pytest.raises(ValueError, match="sigma_leg"):
+        h.daily_legs(h.computation_days(make_bars(rows))[0])
+
+
+def test_nonfinite_leg_return_raises():
+    days = synth_days(61)
+    days[60] = replace(days[60], eu_entry_price=float("nan"))
+    with pytest.raises(ValueError, match="non-finite leg return"):
+        h.daily_legs(days)

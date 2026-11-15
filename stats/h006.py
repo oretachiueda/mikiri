@@ -2,10 +2,13 @@
 
 Unit 1: HistData zip input, zoneinfo clock handling, outlier cleaning, the
 R1 clock check, and computation days with boundary minutes and prices.
+Unit 2: the S3 stop walk per leg and the per-day table (sigma, u, sigma_hat,
+leverage, R) with the days.parquet column layout.
 """
 
 import hashlib
 import io
+import math
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -378,3 +381,229 @@ def computation_days(bars: Bars) -> tuple[list[Day], dict]:
         "excluded_weekdays": weekdays - len(days),
     }
     return days, stats
+
+
+W_EU = 0.5777354984728738
+W_US = 0.42226450152712625
+LEVERAGE_CAP = 43.27239725805739
+DIRECTION = {"eu": -1, "us": 1}
+PREPARATION_DAYS = 60
+
+
+@dataclass
+class Walk:
+    stopped: bool
+    exit_min: int
+    exit_price: float | None
+    flag_min: int | None
+    double_touches: int
+    optimistic_matches: bool
+
+
+def _stop_touch(low: float, high: float, level: float, direction: int) -> bool:
+    return low <= level if direction > 0 else high >= level
+
+
+def walk_window(
+    mins: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    open_: np.ndarray,
+    start_min: int,
+    length: int,
+    entry: float,
+    sigma: float,
+    direction: int,
+    use_stop: bool = True,
+) -> Walk:
+    """S3 stop walk over the bars with minute in [start_min, start_min + length).
+
+    The stop starts one sigma against the direction and moves to the entry
+    price from the bar after a favorable one-sigma touch. A time exit is
+    reported as exit_price None at the window's boundary minute; the caller
+    supplies the boundary price.
+    """
+    end_min = start_min + length
+    if not use_stop:
+        return Walk(False, end_min, None, None, 0, True)
+    if not (sigma > 0) or not math.isfinite(sigma):
+        raise ValueError("walk sigma must be positive and finite")
+    lo = int(np.searchsorted(mins, start_min, side="left"))
+    hi = int(np.searchsorted(mins, end_min, side="left"))
+    minute = mins[lo:hi].tolist()
+    opens = open_[lo:hi].tolist()
+    highs = high[lo:hi].tolist()
+    lows = low[lo:hi].tolist()
+    stop0 = entry * math.exp(-direction * sigma)
+    favorable = entry * math.exp(direction * sigma)
+
+    def favorable_touch(high_: float, low_: float) -> bool:
+        return high_ >= favorable if direction > 0 else low_ <= favorable
+
+    def run(optimistic: bool) -> Walk:
+        level = stop0
+        flag_min = None
+        move_next = False
+        for index in range(len(minute)):
+            if move_next:
+                level = entry
+                move_next = False
+            touched = favorable_touch(highs[index], lows[index])
+            if optimistic and touched and flag_min is None:
+                flag_min = minute[index]
+                move_next = True
+            if _stop_touch(lows[index], highs[index], level, direction):
+                gap = opens[index] < level if direction > 0 else opens[index] > level
+                price = opens[index] if gap else level
+                return Walk(True, minute[index], price, flag_min, 0, True)
+            if not optimistic and touched and flag_min is None:
+                flag_min = minute[index]
+                move_next = True
+        return Walk(False, end_min, None, flag_min, 0, True)
+
+    conservative = run(False)
+    if direction > 0:
+        dual = (low[lo:hi] <= stop0) & (high[lo:hi] >= favorable)
+    else:
+        dual = (high[lo:hi] >= stop0) & (low[lo:hi] <= favorable)
+    double_touches = int(dual.sum())
+    optimistic = run(True)
+    matches = (
+        conservative.stopped,
+        conservative.exit_min,
+        conservative.exit_price,
+    ) == (optimistic.stopped, optimistic.exit_min, optimistic.exit_price)
+    return Walk(
+        stopped=conservative.stopped,
+        exit_min=conservative.exit_min,
+        exit_price=conservative.exit_price,
+        flag_min=conservative.flag_min,
+        double_touches=double_touches,
+        optimistic_matches=matches,
+    )
+
+
+LEG_FIELDS = (
+    "entry_price",
+    "entry_fallback",
+    "boundary_exit_price",
+    "sigma",
+    "stop_initial",
+    "flag_min",
+    "stopped",
+    "exit_min",
+    "exit_price",
+    "r_nostop",
+    "r",
+    "a",
+    "c",
+)
+DAY_COLUMNS = (
+    "date",
+    "us_dst",
+    "eu_entry_min",
+    "us_entry_min",
+    "us_exit_min_boundary",
+    *(f"{leg}_{field}" for leg in ("eu", "us") for field in LEG_FIELDS),
+    "u",
+    "sigma_hat",
+    "leverage",
+    "R",
+)
+
+
+def daily_legs(days: list[Day], pip: float = 0.4, target: float = 0.30) -> pd.DataFrame:
+    """Per-calculation-day leg table with the days.parquet columns.
+
+    The first PREPARATION_DAYS calculation days carry no sigma and no walk:
+    their r is the no-stop return. Volatility estimates always exclude the
+    current day and use the previous 60 values.
+    """
+    half_cost = pip / 2 * 1e-4
+    nostop_history: dict[str, list[float]] = {"eu": [], "us": []}
+    u_history: list[float] = []
+    rows: list[dict] = []
+    for index, day in enumerate(days):
+        row: dict = {
+            "date": day.date,
+            "us_dst": day.us_dst,
+            "eu_entry_min": day.eu_entry_min,
+            "us_entry_min": day.us_entry_min,
+            "us_exit_min_boundary": day.us_exit_min,
+        }
+        walked = index >= PREPARATION_DAYS
+        legs: dict[str, dict] = {}
+        for leg in ("eu", "us"):
+            direction = DIRECTION[leg]
+            if leg == "eu":
+                entry_min, exit_min = day.eu_entry_min, 480
+                entry, fallback = day.eu_entry_price, day.eu_entry_fallback
+                boundary_exit = day.us_entry_price
+            else:
+                entry_min, exit_min = 480, day.us_exit_min
+                entry, fallback = day.us_entry_price, day.us_entry_fallback
+                boundary_exit = day.us_exit_price
+            r_nostop = direction * math.log(boundary_exit / entry)
+            sigma = stop_initial = flag_min = None
+            if walked:
+                sigma = float(np.std(nostop_history[leg][-60:], ddof=1))
+                if not math.isfinite(sigma) or sigma <= 0:
+                    raise ValueError(f"sigma_leg not positive for {leg} on {day.date}")
+                stop_initial = entry * math.exp(-direction * sigma)
+                walk = walk_window(
+                    day.mins,
+                    day.high,
+                    day.low,
+                    day.open,
+                    entry_min,
+                    exit_min - entry_min,
+                    entry,
+                    sigma,
+                    direction,
+                )
+                stopped = walk.stopped
+                exit_min = walk.exit_min
+                fill = walk.exit_price
+                exit_price = boundary_exit if fill is None else fill
+                flag_min = walk.flag_min
+            else:
+                stopped, exit_price = False, boundary_exit
+            r = direction * math.log(exit_price / entry)
+            a = direction * (exit_price - entry) / entry
+            c = half_cost / entry + half_cost / exit_price
+            if not all(map(math.isfinite, (r, a, c))):
+                raise ValueError(f"non-finite leg return for {leg} on {day.date}")
+            legs[leg] = {
+                "entry_price": entry,
+                "entry_fallback": fallback,
+                "boundary_exit_price": boundary_exit,
+                "sigma": sigma,
+                "stop_initial": stop_initial,
+                "flag_min": flag_min,
+                "stopped": stopped,
+                "exit_min": exit_min,
+                "exit_price": exit_price,
+                "r_nostop": r_nostop,
+                "r": r,
+                "a": a,
+                "c": c,
+            }
+        u = W_EU * legs["eu"]["r"] + W_US * legs["us"]["r"]
+        sigma_hat = leverage = ret = None
+        if walked:
+            sigma_hat = math.sqrt(252.0) * float(np.std(u_history[-60:], ddof=1))
+            if not math.isfinite(sigma_hat) or sigma_hat <= 0:
+                raise ValueError(f"sigma_hat not positive on {day.date}")
+            leverage = min(target / sigma_hat, LEVERAGE_CAP)
+            ret = leverage * (
+                W_EU * (legs["eu"]["a"] - legs["eu"]["c"])
+                + W_US * (legs["us"]["a"] - legs["us"]["c"])
+            )
+        for leg in ("eu", "us"):
+            row.update({f"{leg}_{field}": legs[leg][field] for field in LEG_FIELDS})
+        row.update({"u": u, "sigma_hat": sigma_hat, "leverage": leverage, "R": ret})
+        rows.append(row)
+        nostop_history["eu"].append(legs["eu"]["r_nostop"])
+        nostop_history["us"].append(legs["us"]["r_nostop"])
+        u_history.append(u)
+    return pd.DataFrame(rows, columns=DAY_COLUMNS)
