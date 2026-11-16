@@ -26,9 +26,10 @@
 | `kind` | Extra fields |
 |---|---|
 | `prereg` | `doc` (path), `doc_sha256`, `configs` (integer), `dev` and `holdout` (`{"start": date, "end": date}`) |
-| `run` | `stage` (`dev` or `holdout`), `configs` (integer counted toward N), `n_cumulative`, `code_commit` (40 hex), `data_sha256` (object, file name to hash), `results_sha256` |
+| `run` | `stage` (`dev`, `holdout`, or `search`), `configs` (integer counted toward N), `n_cumulative`, `code_commit` (40 hex), `data_sha256` (object, file name to hash), `results_sha256` |
 | `verdict` | `stage`, `gates` (object, gate letter to boolean), `result` (`pass` or `reject`), `values` (object of reported numbers), `results_sha256`, `recomputed_by` (model family of the independent runner) |
 | `holdout_open` | `stage` is always `holdout`; `reason` |
+| `search` | `doc` (path), `doc_sha256`, `configs_planned` and `configs_max` (integers), `data` (object: `pair`, `start`, `end`), `excluded_days` (string rule). A search plan picks candidates only; it decides no verdict. Its later `run` line uses `stage` `search` |
 | `correction` | `corrects_seq` (integer), `reason`, `fields` (object of corrected values) |
 
 `results_sha256` is the SHA-256 of the run directory's `SHA256SUMS` file, made with `shasum -a 256 <files>` inside that directory, one line per result file in name order.
