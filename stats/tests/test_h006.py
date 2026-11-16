@@ -477,6 +477,22 @@ def test_walk_counts_double_touches_and_optimistic_agrees():
     assert walk.exit_price == pytest.approx(entry * math.exp(-sigma))
 
 
+def test_walk_does_not_count_straddles_after_the_exit_bar():
+    entry, sigma = 1.30, 0.01
+    straddle_high, straddle_low = entry * math.exp(0.0105), entry * math.exp(-0.0105)
+    arrays = walk_arrays(
+        [
+            (480, entry, entry, entry),
+            (490, entry - 0.014, entry - 0.010, entry - 0.018),
+            (600, entry - 0.004, straddle_high, straddle_low),
+        ]
+    )
+    walk = h.walk_window(*arrays, 480, 345, entry, sigma, direction=1)
+    assert walk.stopped and walk.exit_min == 490
+    assert walk.flag_min is None
+    assert walk.double_touches == 0
+
+
 def weekday_dates(start, count):
     dates, current = [], start
     while len(dates) < count:

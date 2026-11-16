@@ -476,6 +476,9 @@ def walk_window(
     reported as exit_price None at the window's boundary minute; the caller
     supplies the boundary price. With optimistic the returned values come
     from the flag-first ordering instead of the conservative one.
+    double_touches counts bars from the entry through the conservative exit
+    bar inclusive that touch both the bar's current stop and the favorable
+    one-sigma level; bars after the exit are not walked (R15 supplement).
     """
     end_min = start_min + length
     if not use_stop:
@@ -516,11 +519,28 @@ def walk_window(
         return Walk(False, end_min, None, flag_min, 0, True)
 
     conservative = run(False)
+    minutes_slice = mins[lo:hi]
+    # R15 supplement: count bars walked while the position is open, from the
+    # entry boundary minute through the conservative exit bar inclusive. The
+    # stop test uses the bar's current stop (stop0 through the flag bar, entry
+    # from the bar after the flag); the favorable test always uses E*exp(±sigma).
+    flag_pos = (
+        int(np.searchsorted(minutes_slice, conservative.flag_min, side="left"))
+        if conservative.flag_min is not None
+        else len(minutes_slice)
+    )
+    stop_levels = np.where(np.arange(len(minutes_slice)) <= flag_pos, stop0, entry)
     if direction > 0:
-        dual = (low[lo:hi] <= stop0) & (high[lo:hi] >= favorable)
+        dual = (low[lo:hi] <= stop_levels) & (high[lo:hi] >= favorable)
     else:
-        dual = (high[lo:hi] >= stop0) & (low[lo:hi] <= favorable)
-    double_touches = int(dual.sum())
+        dual = (high[lo:hi] >= stop_levels) & (low[lo:hi] <= favorable)
+    if conservative.stopped:
+        exit_pos = int(
+            np.searchsorted(minutes_slice, conservative.exit_min, side="left")
+        )
+        double_touches = int(dual[: exit_pos + 1].sum())
+    else:
+        double_touches = int(dual.sum())
     optimistic_run = run(True)
     matches = (
         conservative.stopped,
