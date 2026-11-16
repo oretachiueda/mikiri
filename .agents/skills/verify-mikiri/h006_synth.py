@@ -9,6 +9,20 @@ import zipfile
 from pathlib import Path
 
 
+class NonSeekable:
+    def __init__(self, file):
+        self.file = file
+
+    def write(self, data):
+        return self.file.write(data)
+
+    def tell(self):
+        return self.file.tell()
+
+    def flush(self):
+        return self.file.flush()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
@@ -32,13 +46,16 @@ def main():
     ]
     for ident, first, last in periods:
         path = dest / f"HISTDATA_COM_ASCII_EURUSD_M1_{ident}.zip"
-        with zipfile.ZipFile(
-            path,
-            "w",
-            compression=zipfile.ZIP_DEFLATED,
-            compresslevel=3,
-            allowZip64=True,
-        ) as z:
+        with (
+            path.open("wb") as raw,
+            zipfile.ZipFile(
+                NonSeekable(raw),
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+                compresslevel=3,
+                allowZip64=True,
+            ) as z,
+        ):
             csv_info = zipfile.ZipInfo(f"DAT_ASCII_EURUSD_M1_{ident}.csv")
             csv_info.compress_type = zipfile.ZIP_DEFLATED
             with z.open(csv_info, "w", force_zip64=True) as f:

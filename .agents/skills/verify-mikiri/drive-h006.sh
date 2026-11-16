@@ -32,6 +32,13 @@ root, evidence = map(Path, sys.argv[1:])
 inputs = evidence / "inputs"
 zips, spy = inputs / "zips", inputs / "SPY.json"
 rust = ["target/release/h006-compute", "--histdata-dir", zips, "--spy", spy]
+for path in sorted(zips.glob("*.zip")):
+    with zipfile.ZipFile(path) as archive, path.open("rb") as raw:
+        for item in archive.infolist():
+            assert item.compress_type == zipfile.ZIP_DEFLATED and item.flag_bits & 0x8, path
+            raw.seek(item.header_offset + 6)
+            assert int.from_bytes(raw.read(2), "little") & 0x8, path
+print("ZIP verification: 29 files, deflate and data-descriptor flag 0x8", flush=True)
 python_exists = Path("stats/h006.py").is_file()
 py = ["uv", "run", "--locked", "--project", "stats", "python", "stats/h006.py"]
 outputs = ("accounts.parquet", "days.parquet", "random.parquet", "removed_bars.parquet", "summary.json", "SHA256SUMS")

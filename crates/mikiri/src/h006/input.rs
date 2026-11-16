@@ -252,11 +252,11 @@ pub fn days(bars: &[Bar]) -> Result<Vec<Day>> {
 #[derive(Debug, serde::Serialize)]
 pub struct SeasonClock {
     pub top: Vec<(i16, f64)>,
-    pub sunday_median: f64,
+    pub sunday_median: Option<f64>,
     pub sundays: usize,
 }
 
-pub fn clock_check(bars: &[Bar]) -> Result<[SeasonClock; 2]> {
+pub fn clock_check(bars: &[Bar]) -> ([SeasonClock; 2], bool) {
     let mut sums = [[(0.0_f64, 0_u64); 180]; 2];
     let mut sundays: [BTreeMap<Date, i16>; 2] = Default::default();
     for b in bars {
@@ -298,12 +298,13 @@ pub fn clock_check(bars: &[Bar]) -> Result<[SeasonClock; 2]> {
         top.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let mut starts: Vec<_> = days.into_values().collect();
         starts.sort_unstable();
-        if starts.is_empty() || top.len() < 2 {
-            return Err("clock check lacks observations".into());
-        }
-        let median =
-            (f64::from(starts[(starts.len() - 1) / 2]) + f64::from(starts[starts.len() / 2])) / 2.0;
-        let valid = top[0].0 == 510 && top[0].1 > top[1].1 && (1020.0..=1030.0).contains(&median);
+        let median = (!starts.is_empty()).then(|| {
+            (f64::from(starts[(starts.len() - 1) / 2]) + f64::from(starts[starts.len() / 2])) / 2.0
+        });
+        let valid = top.len() >= 2
+            && top[0].0 == 510
+            && top[0].1 > top[1].1
+            && median.is_some_and(|m| (1020.0..=1030.0).contains(&m));
         top.truncate(5);
         let clock = SeasonClock {
             top,
@@ -313,10 +314,15 @@ pub fn clock_check(bars: &[Bar]) -> Result<[SeasonClock; 2]> {
         passed &= valid;
         result.push(clock);
     }
-    if !passed {
-        return Err(format!("clock check failed: {result:?}").into());
-    }
-    result.try_into().map_err(|_| "clock check failed".into())
+    let mut iter = result.into_iter();
+    let clock = std::array::from_fn(|_| {
+        iter.next().unwrap_or(SeasonClock {
+            top: Vec::new(),
+            sunday_median: None,
+            sundays: 0,
+        })
+    });
+    (clock, passed)
 }
 
 #[cfg(test)]
@@ -556,10 +562,11 @@ mod tests {
                 bars.push(bar(&format!("{monday}T{time}"), p));
             }
         }
-        let report = clock_check(&bars).unwrap();
+        let (report, passed) = clock_check(&bars);
+        assert!(passed);
         assert_eq!(report[0].top[0].0, 510);
-        assert_eq!(report[1].sunday_median, 1020.);
+        assert_eq!(report[1].sunday_median, Some(1020.));
         bars[2].open = 1.1;
-        assert!(clock_check(&bars).is_err());
+        assert!(!clock_check(&bars).1);
     }
 }

@@ -583,12 +583,12 @@ mod tests {
         let clock = [
             SeasonClock {
                 top: vec![(510, 0.1)],
-                sunday_median: 1020.,
+                sunday_median: Some(1020.),
                 sundays: 1,
             },
             SeasonClock {
                 top: vec![(510, 0.1)],
-                sunday_median: 1020.,
+                sunday_median: Some(1020.),
                 sundays: 1,
             },
         ];

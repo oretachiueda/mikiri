@@ -605,41 +605,63 @@ mod tests {
     }
     #[test]
     fn changing_future_bars_does_not_change_earlier_calculations() {
-        let (mut days, mut bars) = sample();
-        let a = compute(
-            &days,
-            &bars,
-            Mode::Stop,
-            false,
-            Order::Conservative,
-            0.4,
-            0.3,
-        )
-        .unwrap();
-        for b in &mut bars {
-            if b.timestamp.date() > days[90].date {
-                b.open *= 1.2;
-                b.high *= 1.2;
-                b.low *= 1.2;
-                b.close *= 1.2;
+        let mut raw = Vec::new();
+        for i in 0..180 {
+            let date = date(2007, 1, 2)
+                .checked_add(jiff::Span::new().days(i))
+                .unwrap();
+            for minute in 0..1440 {
+                let price = 1.1
+                    + 0.001 * (i as f64 * 0.17).sin()
+                    + 0.0005 * (minute as f64 * 0.01 + i as f64 * 0.21).sin();
+                raw.push(Bar {
+                    timestamp: date.at((minute / 60) as i8, (minute % 60) as i8, 0, 0),
+                    open: price,
+                    high: price + 0.00001,
+                    low: price - 0.00001,
+                    close: price,
+                });
             }
         }
-        for d in &mut days[91..] {
-            for price in &mut d.prices {
-                *price *= 1.2;
+        let calculate = |raw: &[Bar]| {
+            let (clean, _) = super::super::input::clean(raw);
+            let days = super::super::input::days(&clean).unwrap();
+            compute(
+                &days,
+                &clean,
+                Mode::Stop,
+                false,
+                Order::Conservative,
+                0.4,
+                0.3,
+            )
+            .unwrap()
+        };
+        let original = calculate(&raw);
+        let cutoff_index = (90..original.len() - 1)
+            .find(|&i| original[i].date.tomorrow().unwrap() == original[i + 1].date)
+            .unwrap();
+        let cutoff = original[cutoff_index].date;
+        let next_date = original[cutoff_index + 1].date;
+        let mut changed_next = 0;
+        for bar in &mut raw {
+            if bar.timestamp.date() > cutoff {
+                if bar.timestamp.date() == next_date {
+                    changed_next += 1;
+                }
+                bar.open *= 1.2;
+                bar.high *= 1.2;
+                bar.low *= 1.2;
+                bar.close *= 1.2;
             }
         }
-        let b = compute(
-            &days,
-            &bars,
-            Mode::Stop,
-            false,
-            Order::Conservative,
-            0.4,
-            0.3,
-        )
-        .unwrap();
-        for (a, b) in a[..90].iter().zip(&b[..90]) {
+        assert_eq!(changed_next, 1440);
+        let changed = calculate(&raw);
+        for (a, b) in original[..=cutoff_index]
+            .iter()
+            .zip(&changed[..=cutoff_index])
+        {
+            assert_eq!(a.date, b.date);
             for (x, y) in a.legs.iter().zip(b.legs.iter()) {
                 assert_eq!(x.r.to_bits(), y.r.to_bits());
                 assert_eq!(x.sigma.map(f64::to_bits), y.sigma.map(f64::to_bits));
@@ -647,10 +669,15 @@ mod tests {
                     x.walk.initial_stop.map(f64::to_bits),
                     y.walk.initial_stop.map(f64::to_bits)
                 );
+                assert_eq!(x.walk.exit_price.to_bits(), y.walk.exit_price.to_bits());
             }
             assert_eq!(a.u.to_bits(), b.u.to_bits());
             assert_eq!(a.sigma_hat.map(f64::to_bits), b.sigma_hat.map(f64::to_bits));
             assert_eq!(a.leverage.map(f64::to_bits), b.leverage.map(f64::to_bits));
+            assert_eq!(
+                a.daily_return.map(f64::to_bits),
+                b.daily_return.map(f64::to_bits)
+            );
         }
     }
     #[test]

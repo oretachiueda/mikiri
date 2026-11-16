@@ -214,9 +214,12 @@ pub fn run(
     let raw_count = loaded.bars.len();
     let (bars, removed) = input::clean(&loaded.bars);
     drop(loaded.bars);
-    let clock = input::clock_check(&bars)?;
+    let (clock, valid_clock) = input::clock_check(&bars);
     println!("clock_check {}", serde_json::to_string(&clock)?);
     io::stdout().flush()?;
+    if !valid_clock {
+        return Err("clock check failed".into());
+    }
     let boundary = input::days(&bars)?;
     let calculated = daily::compute(
         &boundary,
@@ -494,6 +497,18 @@ mod cli_tests {
     fn refusal_tampered_dev_output() {
         let f = Fixture::new();
         fs::write(f.dev.join("days.parquet"), "tampered").unwrap();
+        assert!(f.check().is_err());
+    }
+    #[test]
+    fn refusal_verdict_result_not_pass() {
+        let f = Fixture::new();
+        f.change_ledger(|v| v[1]["result"] = json!("reject"));
+        assert!(f.check().is_err());
+    }
+    #[test]
+    fn refusal_envelope_rust_stage_not_dev() {
+        let f = Fixture::new();
+        f.change_match(|v| v["rust_summary"]["stage"] = json!("holdout"));
         assert!(f.check().is_err());
     }
     #[test]
