@@ -45,7 +45,6 @@ from h005 import benchmark
 NY = ZoneInfo("America/New_York")
 DUB = ZoneInfo("Europe/Dublin")
 JST = ZoneInfo("Asia/Tokyo")
-FIRST_DAY = date(2007, 1, 2)
 ZIP_PREFIX = "HISTDATA_COM_ASCII_EURUSD_M1_"
 YEAR_ZIPS = tuple(f"{ZIP_PREFIX}{year}.zip" for year in range(2007, 2026))
 MONTH_ZIPS = tuple(f"{ZIP_PREFIX}2026{month:02d}.zip" for month in range(1, 11))
@@ -401,7 +400,7 @@ def computation_days(bars: Bars) -> tuple[list[Day], dict]:
     weekdays = 0
     for position, value in enumerate(unique):
         observed = _calendar_date(int(value))
-        if observed.weekday() > 4 or observed < FIRST_DAY:
+        if observed.weekday() > 4:
             continue
         weekdays += 1
         eu_entry, us_exit = ny_minutes(observed)

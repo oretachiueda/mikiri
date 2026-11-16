@@ -363,10 +363,15 @@ def test_boundary_price_fallback_picks_the_last_near_bar():
     assert stats == {"weekday_dates": 1, "computation_days": 0, "excluded_weekdays": 1}
 
 
+def test_computation_days_includes_2007_01_01_when_boundaries_exist():
+    rows = flat(20070101, 0, 1440)
+    days, _stats = h.computation_days(make_bars(rows))
+    assert days and days[0].date == date(2007, 1, 1)
+
+
 def test_computation_days_skip_weekends_and_preparation_start():
     rows = flat(20240106, 0, 1440) + flat(20240107, 0, 1440)
     rows += flat(20240108, 0, 1440) + flat(20240109, 0, 1440)
-    rows += flat(20070101, 0, 1440)
     days, stats = h.computation_days(
         make_bars(sorted(rows, key=lambda row: row[0] * 1440 + row[1]))
     )
