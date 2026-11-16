@@ -1123,7 +1123,7 @@ def random_control(
     day_returns = np.full((rounds, count), np.nan)
     valid = np.zeros((rounds, count), dtype=bool)
     start_store = np.full((rounds, count, 2), -1, dtype=np.int64)
-    exit_store = np.zeros((rounds, count, 2), dtype=np.int64)
+    exit_store = np.full((rounds, count, 2), -1, dtype=np.int64)
     stopped_store = np.zeros((rounds, count, 2), dtype=bool)
     a_store = np.full((rounds, count, 2), np.nan)
     c_store = np.full((rounds, count, 2), np.nan)
@@ -1154,12 +1154,15 @@ def random_control(
             seed_n = seeds * np.uint64(2**32) + np.uint64(2 * index + leg_id)
             m = (splitmix64(seed_n) % np.uint64(K)).astype(np.int64)
             start_store[:, index, leg_id] = m
-            walked = np.isfinite(entry[m]) & np.isfinite(exit_price[m])
+            # Gate D ruling: validity needs both boundary prices, even when
+            # the walk stops before m + length and never trades the exit.
+            boundary = _fallback_prices(open_d, m + length)
+            walked = np.isfinite(entry[m]) & np.isfinite(boundary)
             entry_r, exit_r = entry[m], exit_price[m]
             a_r = DIRECTION[leg] * (exit_r - entry_r) / entry_r
             c_r = half_cost / entry_r + half_cost / exit_r
             stopped_store[:, index, leg_id] = stopped[m] & walked
-            exit_store[:, index, leg_id] = np.where(walked, exit_min[m], 0)
+            exit_store[:, index, leg_id] = np.where(walked, exit_min[m], -1)
             a_store[:, index, leg_id] = np.where(walked, a_r, np.nan)
             c_store[:, index, leg_id] = np.where(walked, c_r, np.nan)
             windows.append((m, walked))
@@ -1206,6 +1209,7 @@ def random_control(
         return None, control
     starts_flat = start_store.reshape(-1)
     walked_flat = starts_flat >= 0
+    exits_flat = exit_store.reshape(-1)
     valid_flat = np.repeat(valid, 2, axis=1).reshape(-1)
     result = pd.DataFrame(
         {
@@ -1217,10 +1221,10 @@ def random_control(
                 np.where(walked_flat, starts_flat, np.nan), dtype="Int64"
             ),
             "exit_min": pd.array(
-                np.where(walked_flat, exit_store.reshape(-1), np.nan), dtype="Int64"
+                np.where(exits_flat >= 0, exits_flat, np.nan), dtype="Int64"
             ),
             "stopped": pd.array(
-                np.where(walked_flat, stopped_store.reshape(-1), np.nan),
+                np.where(exits_flat >= 0, stopped_store.reshape(-1), np.nan),
                 dtype="boolean",
             ),
             "a": a_store.reshape(-1),
