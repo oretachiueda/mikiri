@@ -1,7 +1,8 @@
 """Independently recompute the H006 EUR/USD two-leg session preregistration.
 
-Unit 1: HistData zip input, zoneinfo clock handling, outlier cleaning, the
-R1 clock check, and computation days with boundary minutes and prices.
+Unit 1: HistData zip input with byte-identical repeat dropping (correction
+1), zoneinfo clock handling, outlier cleaning, the R1 clock check, and
+computation days with boundary minutes and prices.
 Unit 2: the S3 stop walk per leg and the per-day table (sigma, u, sigma_hat,
 leverage, R) with the days.parquet column layout.
 Unit 3: segments with the tax ledger and pretax path, the SPY baseline, PSR,
@@ -20,6 +21,8 @@ fresh holdout.
 """
 
 import argparse
+import array
+import bisect
 import hashlib
 import io
 import itertools
@@ -65,6 +68,7 @@ class Bars:
     close: np.ndarray
     sha256: dict[str, str]
     parsed: int
+    duplicates: tuple[str, ...] = ()
 
 
 def splitmix64(values):
@@ -87,8 +91,65 @@ def _zip_text(path: Path, member: str) -> bytes:
         return archive.read(member)
 
 
-def _parse_zip(name: str, text: bytes, cutoff: bytes) -> dict[str, np.ndarray]:
-    lines = [line for line in text.split(b"\n") if line and line[:8] <= cutoff]
+def _zip_lines(text: bytes, cutoff: bytes) -> list[bytes]:
+    """A zip's CSV lines past the date cut, without newlines or trailing CRs."""
+    lines = []
+    for raw in text.split(b"\n"):
+        line = raw[:-1] if raw[-1:] == b"\r" else raw
+        if line and line[:8] <= cutoff:
+            lines.append(line)
+    return lines
+
+
+def _line_stamp(line: bytes) -> int | None:
+    try:
+        return int(line[:8]) * 1_000_000 + int(line[9:15])
+    except ValueError:
+        return None
+
+
+def _stamp_text(stamp: int) -> str:
+    return f"{stamp // 1_000_000:08d} {stamp % 1_000_000:06d}"
+
+
+class _RepeatFilter:
+    """Correction 1: drop lines that byte-identically repeat a kept timestamp.
+
+    Kept stamps are strictly increasing, so the first line of a repeated
+    stamp is found by binary search and compared by full bytes, never a hash.
+    """
+
+    def __init__(self) -> None:
+        self.kept = bytearray()
+        self.stamps = array.array("q")
+        self.ends = array.array("q")
+
+    def feed(self, lines: list[bytes]) -> tuple[list[bytes], list[str]]:
+        """Filter one zip's lines; return the kept lines and dropped stamps."""
+        kept_lines: list[bytes] = []
+        dropped: list[str] = []
+        stamps, ends, kept = self.stamps, self.ends, self.kept
+        for line in lines:
+            stamp = _line_stamp(line)
+            if stamp is None:
+                kept_lines.append(line)
+            elif not stamps or stamp > stamps[-1]:
+                kept += line
+                stamps.append(stamp)
+                ends.append(len(kept))
+                kept_lines.append(line)
+            else:
+                at = bisect.bisect_left(stamps, stamp)
+                if stamps[at] != stamp:
+                    raise ValueError("bar timestamps out of order")
+                start = ends[at - 1] if at else 0
+                if kept[start : ends[at]] != line:
+                    raise ValueError("duplicate bar timestamp")
+                dropped.append(_stamp_text(stamp))
+        return kept_lines, dropped
+
+
+def _parse_zip(name: str, lines: list[bytes]) -> dict[str, np.ndarray]:
     if not lines:
         return {
             "stamp": np.array([], dtype=np.int64),
@@ -128,7 +189,8 @@ def _parse_zip(name: str, text: bytes, cutoff: bytes) -> dict[str, np.ndarray]:
 
 
 def read_histdata(directory: Path, stage: str) -> Bars:
-    """Read the stage's HistData zips, dropping post-cutoff lines before parsing."""
+    """Read the stage's zips, dropping post-cutoff lines and byte-identical
+    repeats (correction 1) before parsing."""
     if stage not in STAGE_ZIPS:
         raise ValueError("invalid stage")
     required = STAGE_ZIPS[stage]
@@ -141,21 +203,23 @@ def read_histdata(directory: Path, stage: str) -> Bars:
         raise ValueError(f"missing HistData zip: {missing[0]}")
     stamps, opened = [], {}
     pieces = {key: [] for key in CSV_COLUMNS[1:]}
+    duplicates: list[str] = []
+    repeats = _RepeatFilter()
     for name in sorted(required):
         tag = name[len(ZIP_PREFIX) : -len(".zip")]
         text = _zip_text(directory / name, f"DAT_ASCII_EURUSD_M1_{tag}.csv")
         opened[name] = digest(directory / name)
-        piece = _parse_zip(name, text, CUTOFFS[stage])
+        lines = _zip_lines(text, CUTOFFS[stage])
+        if any(line.count(b";") != len(CSV_COLUMNS) - 1 for line in lines):
+            raise ValueError(f"malformed HistData line in {name}")
+        kept, dropped = repeats.feed(lines)
+        duplicates += dropped
+        piece = _parse_zip(name, kept)
         stamps.append(piece["stamp"])
         for key, values in pieces.items():
             values.append(piece[key])
     stamp = np.concatenate(stamps)
     columns = {key: np.concatenate(values) for key, values in pieces.items()}
-    steps = np.diff(stamp)
-    if (steps == 0).any():
-        raise ValueError("duplicate bar timestamp")
-    if (steps < 0).any():
-        raise ValueError("bar timestamps out of order")
     return Bars(
         stamp=stamp,
         open=columns["open"],
@@ -164,6 +228,7 @@ def read_histdata(directory: Path, stage: str) -> Bars:
         close=columns["close"],
         sha256=opened,
         parsed=int(stamp.size),
+        duplicates=tuple(duplicates),
     )
 
 
@@ -297,6 +362,7 @@ def clean_outliers(bars: Bars) -> tuple[Bars, list[str]]:
             close=bars.close[kept],
             sha256=bars.sha256,
             parsed=bars.parsed,
+            duplicates=bars.duplicates,
         ),
         removed,
     )
@@ -1617,6 +1683,10 @@ def python_summary(
             "removed_bars": len(removed),
             "calculation_days": len(days),
             "excluded_days": len(excluded),
+        },
+        "duplicate_lines_removed": {
+            "count": len(bars.duplicates),
+            "timestamps": list(bars.duplicates),
         },
         "first_calculation_day": days[0].date.isoformat(),
         "excluded_days": excluded,
