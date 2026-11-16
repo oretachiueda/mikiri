@@ -175,9 +175,10 @@ def test_read_rejects_duplicate_and_out_of_order(tmp_path):
     directory = tmp_path / "order"
     directory.mkdir()
     base = year_lines(2008)
+    clash = line(20080115, 600, 1.39)
     for year, lines in (
         (2007, year_lines(2007)),
-        (2008, [base[0]] + base),
+        (2008, base + [clash]),
     ):
         write_zip(directory, f"{h.ZIP_PREFIX}{year}.zip", lines)
     for year in range(2009, 2025):
@@ -187,6 +188,100 @@ def test_read_rejects_duplicate_and_out_of_order(tmp_path):
     write_zip(directory, f"{h.ZIP_PREFIX}2008.zip", list(reversed(base)))
     with pytest.raises(ValueError, match="out of order"):
         h.read_histdata(directory, "dev")
+
+
+def boundary_lines(start, count):
+    """Weekday bars at the three boundary minutes with varying prices."""
+    lines = []
+    for index, day in enumerate(weekday_dates(start, count)):
+        ymd = day.year * 10000 + day.month * 100 + day.day
+        eu_min, exit_min = h.ny_minutes(day)
+        p_e = 1.30
+        p_m = 1.30 + 0.001 * (index % 17)
+        p_x = p_m + 0.0005 * (index % 5)
+        for minute, price in ((eu_min, p_e), (480, p_m), (exit_min, p_x)):
+            lines.append(line(ymd, minute, price))
+    return lines
+
+
+def write_dev_years(directory, craft=None):
+    for year in range(2007, 2025):
+        lines = (
+            boundary_lines(date(2007, 1, 1), 70) if year == 2007 else year_lines(year)
+        )
+        if craft:
+            lines = craft(year, lines)
+        write_zip(directory, f"{h.ZIP_PREFIX}{year}.zip", lines)
+
+
+def test_byte_identical_repeated_sunday_block_is_dropped(tmp_path):
+    block = [
+        line(20191027, 1140 + minute, 1.10 + minute * 0.0001) for minute in range(60)
+    ]
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    write_dev_years(clean, lambda year, lines: lines + block if year == 2019 else lines)
+    base = h.read_histdata(clean, "dev")
+    assert base.duplicates == ()
+    repeated = tmp_path / "repeated"
+    repeated.mkdir()
+    write_dev_years(
+        repeated, lambda year, lines: lines + block * 2 if year == 2019 else lines
+    )
+    bars = h.read_histdata(repeated, "dev")
+    assert list(bars.duplicates) == [
+        f"20191027 19{minute:02d}00" for minute in range(60)
+    ]
+    assert bars.parsed == base.parsed
+    for column in ("stamp", "open", "high", "low", "close"):
+        assert np.array_equal(getattr(bars, column), getattr(base, column))
+    assert h.daily_legs(h.computation_days(bars)[0]).equals(
+        h.daily_legs(h.computation_days(base)[0])
+    )
+
+
+def test_repeated_timestamp_with_different_content_errors(tmp_path):
+    directory = tmp_path / "clash"
+    directory.mkdir()
+    write_dev_years(
+        directory,
+        lambda year, lines: (
+            lines + [line(20120115, 600, 1.44)] if year == 2012 else lines
+        ),
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        h.read_histdata(directory, "dev")
+
+
+def test_backward_timestamp_that_is_not_a_repeat_errors(tmp_path):
+    directory = tmp_path / "backward"
+    directory.mkdir()
+    write_dev_years(
+        directory,
+        lambda year, lines: (
+            [line(20120116, 600, 1.30)] + lines if year == 2012 else lines
+        ),
+    )
+    with pytest.raises(ValueError, match="out of order"):
+        h.read_histdata(directory, "dev")
+
+
+def test_byte_identical_repeat_across_zips_is_dropped(tmp_path):
+    directory = tmp_path / "across"
+    directory.mkdir()
+    bridge = line(20191231, 1439, 1.21)
+
+    def craft(year, lines):
+        if year == 2019:
+            return lines + [bridge]
+        if year == 2020:
+            return [bridge] + lines
+        return lines
+
+    write_dev_years(directory, craft)
+    bars = h.read_histdata(directory, "dev")
+    assert bars.duplicates == ("20191231 235900",)
+    assert list(bars.stamp).count(20191231 * 1_000_000 + 235_900) == 1
 
 
 def make_bars(rows):
@@ -202,7 +297,15 @@ def make_bars(rows):
         key: np.array([row[i] for row in rows], dtype=np.float64)
         for i, key in ((2, "open"), (3, "high"), (4, "low"), (5, "close"))
     }
-    return h.Bars(stamp=stamp, sha256={}, parsed=len(rows), **values)
+    return h.Bars(
+        stamp=stamp,
+        open=values["open"],
+        high=values["high"],
+        low=values["low"],
+        close=values["close"],
+        sha256={},
+        parsed=len(rows),
+    )
 
 
 def flat(day, start, stop, price=1.30, skip=()):
