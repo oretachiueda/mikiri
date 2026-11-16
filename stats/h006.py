@@ -6,6 +6,8 @@ Unit 2: the S3 stop walk per leg and the per-day table (sigma, u, sigma_hat,
 leverage, R) with the days.parquet column layout.
 Unit 3: segments with the tax ledger and pretax path, the SPY baseline, PSR,
 and the A/B/C/H gates with the accounts.parquet column layout.
+Unit 4: gate D, the random-entry control vectorized per (day, leg) over all
+start minutes at once, with the random.parquet column layout.
 """
 
 import hashlib
@@ -14,6 +16,7 @@ import itertools
 import json
 import math
 import statistics
+import warnings
 import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -806,3 +809,216 @@ def run_segments(
         tables.append(accounts)
         stats[name] = segment
     return pd.concat(tables, ignore_index=True), stats, evaluate_gates(stats)
+
+
+RANDOM_COLUMNS = (
+    "round",
+    "day_index",
+    "leg",
+    "K",
+    "start_min",
+    "exit_min",
+    "stopped",
+    "a",
+    "c",
+    "valid",
+)
+ROUND_COUNT = 1000
+GATE_D_LEVEL = 0.95
+
+
+def _fallback_prices(values: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Exact bar at each target minute, else the last bar up to 5 minutes earlier."""
+    price = values[targets].copy()
+    for shift in range(1, 6):
+        need = ~np.isfinite(price)
+        if not need.any():
+            break
+        source = targets - shift
+        inside = source >= 0
+        candidate = np.where(inside, values[np.maximum(source, 0)], np.nan)
+        price = np.where(need & np.isfinite(candidate), candidate, price)
+    return price
+
+
+def _window_walk(
+    low_d: np.ndarray,
+    high_d: np.ndarray,
+    open_d: np.ndarray,
+    length: int,
+    sigma: float,
+    direction: int,
+    end_max: int,
+) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """S3 walk for every start minute m with m + length <= end_max.
+
+    Returns (K, entry, stopped, exit_min, exit_price) indexed by m. Time exits
+    carry the boundary price of minute m + length and stopped fills respect
+    gap opens. Missing bars never touch a level because NaN compares False.
+    """
+    K = end_max - length + 1
+    if K <= 0:
+        empty = np.array([])
+        return 0, empty, empty.astype(bool), empty.astype(np.int64), empty
+    starts = np.arange(K)
+    entry = _fallback_prices(open_d, starts)
+    if length == 0:
+        return K, entry, np.zeros(K, dtype=bool), starts.copy(), entry.copy()
+    end_price = _fallback_prices(open_d, starts + length)
+    stop0 = entry * math.exp(-direction * sigma)
+    favorable = entry * math.exp(direction * sigma)
+    low_w = np.lib.stride_tricks.sliding_window_view(low_d, length)[:K]
+    high_w = np.lib.stride_tricks.sliding_window_view(high_d, length)[:K]
+    open_w = np.lib.stride_tricks.sliding_window_view(open_d, length)[:K]
+    if direction > 0:
+        hit0 = low_w <= stop0[:, None]
+        flag_hit = high_w >= favorable[:, None]
+        hit1 = low_w <= entry[:, None]
+    else:
+        hit0 = high_w >= stop0[:, None]
+        flag_hit = low_w <= favorable[:, None]
+        hit1 = high_w >= entry[:, None]
+    none = length
+    j0 = np.where(hit0.any(axis=1), hit0.argmax(axis=1), none)
+    jf = np.where(flag_hit.any(axis=1), flag_hit.argmax(axis=1), none)
+    after = np.arange(length)[None, :] > jf[:, None]
+    hit1_after = hit1 & after
+    j1 = np.where(hit1_after.any(axis=1), hit1_after.argmax(axis=1), none)
+    first = j0 <= jf
+    j_exit = np.where(first, j0, j1)
+    stopped = j_exit < none
+    exit_min = np.where(stopped, starts + j_exit, starts + length)
+    open_at = open_w[np.arange(K), np.minimum(j_exit, length - 1)]
+    level = np.where(first, stop0, entry)
+    gap = open_at < level if direction > 0 else open_at > level
+    fill = np.where(gap, open_at, level)
+    exit_price = np.where(stopped, fill, end_price)
+    return K, entry, stopped, exit_min, exit_price
+
+
+def random_control(
+    frame: pd.DataFrame,
+    days: list[Day],
+    rounds: int = ROUND_COUNT,
+    pip: float = 0.4,
+    table: bool = True,
+) -> tuple[pd.DataFrame | None, dict]:
+    """Gate D: matched random-entry control over the dev calculation days."""
+    first_day, last_day = SEGMENTS["dev"]
+    rows = frame[(frame["date"] >= first_day) & (frame["date"] <= last_day)]
+    rows = rows.reset_index(drop=True)
+    dev_days = [day for day in days if first_day <= day.date <= last_day]
+    if len(dev_days) != len(rows):
+        raise ValueError("dev frame rows and day objects disagree")
+    half_cost = pip / 2 * 1e-4
+    count = len(dev_days)
+    seeds = np.arange(rounds, dtype=np.uint64)
+    day_returns = np.full((rounds, count), np.nan)
+    valid = np.zeros((rounds, count), dtype=bool)
+    start_store = np.full((rounds, count, 2), -1, dtype=np.int64)
+    exit_store = np.zeros((rounds, count, 2), dtype=np.int64)
+    stopped_store = np.zeros((rounds, count, 2), dtype=bool)
+    a_store = np.full((rounds, count, 2), np.nan)
+    c_store = np.full((rounds, count, 2), np.nan)
+    ks = np.zeros((count, 2), dtype=np.int64)
+    for index, (day, row) in enumerate(zip(dev_days, rows.itertuples(), strict=True)):
+        open_d = np.full(1440, np.nan)
+        high_d = np.full(1440, np.nan)
+        low_d = np.full(1440, np.nan)
+        open_d[day.mins] = day.open
+        high_d[day.mins] = day.high
+        low_d[day.mins] = day.low
+        end_max = 1018 if day.date.weekday() == 4 else 1438
+        windows = []
+        lengths = []
+        for leg_id, leg in enumerate(("eu", "us")):
+            entry_min = day.eu_entry_min if leg_id == 0 else day.us_entry_min
+            length = int(getattr(row, f"{leg}_exit_min")) - entry_min
+            lengths.append(length)
+            K = end_max - length + 1
+            ks[index, leg_id] = K
+            if K <= 0:
+                windows.append(None)
+                continue
+            sigma = float(getattr(row, f"{leg}_sigma"))
+            _, entry, stopped, exit_min, exit_price = _window_walk(
+                low_d, high_d, open_d, length, sigma, DIRECTION[leg], end_max
+            )
+            seed_n = seeds * np.uint64(2**32) + np.uint64(2 * index + leg_id)
+            m = (splitmix64(seed_n) % np.uint64(K)).astype(np.int64)
+            start_store[:, index, leg_id] = m
+            walked = np.isfinite(entry[m]) & np.isfinite(exit_price[m])
+            entry_r, exit_r = entry[m], exit_price[m]
+            a_r = DIRECTION[leg] * (exit_r - entry_r) / entry_r
+            c_r = half_cost / entry_r + half_cost / exit_r
+            stopped_store[:, index, leg_id] = stopped[m] & walked
+            exit_store[:, index, leg_id] = np.where(walked, exit_min[m], 0)
+            a_store[:, index, leg_id] = np.where(walked, a_r, np.nan)
+            c_store[:, index, leg_id] = np.where(walked, c_r, np.nan)
+            windows.append((m, walked))
+        if windows[0] is None or windows[1] is None:
+            continue
+        m_eu, ok_eu = windows[0]
+        m_us, ok_us = windows[1]
+        overlap = np.maximum(m_eu, m_us) < np.minimum(
+            m_eu + lengths[0], m_us + lengths[1]
+        )
+        day_valid = ok_eu & ok_us & ~overlap
+        valid[:, index] = day_valid
+        if day_valid.any():
+            leverage = float(row.leverage)
+            net = W_EU * (a_store[:, index, 0] - c_store[:, index, 0]) + W_US * (
+                a_store[:, index, 1] - c_store[:, index, 1]
+            )
+            day_returns[:, index] = np.where(day_valid, leverage * net, np.nan)
+    counts = valid.sum(axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mean = np.nanmean(day_returns, axis=1)
+        spread = np.nanstd(day_returns, axis=1, ddof=1)
+    computable = (counts >= 2) & (spread > 0) & np.isfinite(spread) & np.isfinite(mean)
+    round_sr = np.where(computable, math.sqrt(252.0) * mean / spread, np.nan)
+    actual = [float(value) for value in rows["R"]]
+    actual_sr = math.sqrt(252.0) * statistics.fmean(actual) / statistics.stdev(actual)
+    if bool(computable.all()):
+        percentile = float(np.count_nonzero(round_sr <= actual_sr) / rounds)
+        gate_d = percentile >= GATE_D_LEVEL
+    else:
+        percentile = None
+        gate_d = False
+    control = {
+        "actual_sr": actual_sr,
+        "round_sr": [
+            float(value) if np.isfinite(value) else None for value in round_sr
+        ],
+        "excluded_days": (count - counts).tolist(),
+        "percentile": percentile,
+        "gate_d": bool(gate_d),
+    }
+    if not table:
+        return None, control
+    starts_flat = start_store.reshape(-1)
+    walked_flat = starts_flat >= 0
+    valid_flat = np.repeat(valid, 2, axis=1).reshape(-1)
+    result = pd.DataFrame(
+        {
+            "round": np.repeat(np.arange(rounds), count * 2),
+            "day_index": np.tile(np.repeat(np.arange(count), 2), rounds),
+            "leg": np.tile(np.array(["eu", "us"], dtype=object), rounds * count),
+            "K": np.tile(ks.reshape(-1), rounds),
+            "start_min": pd.array(
+                np.where(walked_flat, starts_flat, np.nan), dtype="Int64"
+            ),
+            "exit_min": pd.array(
+                np.where(walked_flat, exit_store.reshape(-1), np.nan), dtype="Int64"
+            ),
+            "stopped": pd.array(
+                np.where(walked_flat, stopped_store.reshape(-1), np.nan),
+                dtype="boolean",
+            ),
+            "a": a_store.reshape(-1),
+            "c": c_store.reshape(-1),
+            "valid": valid_flat,
+        }
+    )
+    return result[list(RANDOM_COLUMNS)], control

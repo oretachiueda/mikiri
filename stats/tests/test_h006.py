@@ -936,3 +936,271 @@ def test_nonfinite_leg_return_raises():
     days[60] = replace(days[60], eu_entry_price=float("nan"))
     with pytest.raises(ValueError, match="non-finite leg return"):
         h.daily_legs(days)
+
+
+def dense_day(target_date, spike_minutes=(), drop_minutes=()):
+    """A day with a bar at (almost) every minute: gentle waves plus spikes."""
+    eu_min, exit_min = h.ny_minutes(target_date)
+    kept = [m for m in range(1440) if m not in set(drop_minutes)]
+    minutes = np.array(kept)
+    opens = 1.30 + 0.0008 * np.sin(0.37 * minutes) + 0.0004 * np.cos(0.11 * minutes)
+    highs = opens + 0.0006
+    lows = opens - 0.0006
+    for minute in spike_minutes:
+        position = minutes == minute
+        highs[position] = opens[position] * 1.01
+        lows[position] = opens[position] * 0.99
+    return (
+        h.Day(
+            date=target_date,
+            eu_entry_min=eu_min,
+            us_entry_min=480,
+            us_exit_min=exit_min,
+            us_dst=h.us_dst(target_date),
+            mins=minutes,
+            open=opens,
+            high=highs,
+            low=lows,
+            close=opens,
+            eu_entry_price=float(opens[minutes == eu_min][0]),
+            eu_entry_fallback=False,
+            us_entry_price=float(opens[minutes == 480][0]),
+            us_entry_fallback=False,
+            us_exit_price=float(opens[minutes == exit_min][0]),
+            us_exit_fallback=False,
+        ),
+        opens,
+        highs,
+        lows,
+    )
+
+
+def empty_day(target_date):
+    eu_min, exit_min = h.ny_minutes(target_date)
+    return h.Day(
+        date=target_date,
+        eu_entry_min=eu_min,
+        us_entry_min=480,
+        us_exit_min=exit_min,
+        us_dst=h.us_dst(target_date),
+        mins=np.array([], dtype=np.int64),
+        open=np.array([], dtype=np.float64),
+        high=np.array([], dtype=np.float64),
+        low=np.array([], dtype=np.float64),
+        close=np.array([], dtype=np.float64),
+        eu_entry_price=1.30,
+        eu_entry_fallback=False,
+        us_entry_price=1.30,
+        us_entry_fallback=False,
+        us_exit_price=1.30,
+        us_exit_fallback=False,
+    )
+
+
+def control_frame(days_list, rets, leverage=8.0, sigma=0.004, us_exit=None):
+    return pd.DataFrame(
+        {
+            "date": [day.date for day in days_list],
+            "eu_exit_min": [480 for _ in days_list],
+            "us_exit_min": [us_exit or day.us_exit_min for day in days_list],
+            "eu_sigma": [sigma for _ in days_list],
+            "us_sigma": [sigma for _ in days_list],
+            "leverage": [leverage for _ in days_list],
+            "R": rets,
+        }
+    )
+
+
+def test_fallback_prices_same_date_only():
+    values = np.full(10, np.nan)
+    values[2] = 1.20
+    values[7] = 1.30
+    price = h._fallback_prices(values, np.arange(10))
+    assert np.isnan(price[0]) and np.isnan(price[1])
+    assert price[2] == 1.20 and price[7] == 1.30
+    assert price[3] == 1.20 and price[6] == 1.20
+    assert price[8] == 1.30 and price[9] == 1.30
+
+
+def test_window_walk_k_covers_len_zero_and_friday():
+    open_d = np.full(1440, 1.30)
+    high_d = np.full(1440, 1.31)
+    low_d = np.full(1440, 1.29)
+    K, entry, stopped, exit_min, exit_price = h._window_walk(
+        low_d, high_d, open_d, 0, 0.004, direction=1, end_max=1438
+    )
+    assert K == 1439
+    assert not stopped.any()
+    assert (exit_min == np.arange(1439)).all()
+    assert (exit_price == entry).all()
+    assert (
+        h._window_walk(low_d, high_d, open_d, 0, 0.004, direction=1, end_max=1018)[0]
+        == 1019
+    )
+    assert (
+        h._window_walk(low_d, high_d, open_d, 1439, 0.004, direction=1, end_max=1438)[0]
+        == 0
+    )
+
+
+def test_window_walk_matches_scalar_reference():
+    rng = np.random.default_rng(11)
+    minutes, opens, highs, lows = [], [], [], []
+    for minute in range(1440):
+        if minute % 9 == 4:
+            continue
+        price = (
+            1.30 + 0.0012 * math.sin(minute / 11.0) + float(rng.uniform(-3e-4, 3e-4))
+        )
+        high, low = price + 5e-4, price - 5e-4
+        if minute in (260, 261):
+            high = price * 1.012
+        if minute in (620, 621):
+            low = price * 0.988
+        if minute == 900:
+            price, high, low = 1.24, 1.2405, 1.2395
+        if minute == 1100:
+            price, high, low = 1.37, 1.3705, 1.3695
+        minutes.append(minute)
+        opens.append(price)
+        highs.append(high)
+        lows.append(low)
+    mins = np.array(minutes)
+    opens_a, highs_a, lows_a = np.array(opens), np.array(highs), np.array(lows)
+    open_d = np.full(1440, np.nan)
+    high_d = np.full(1440, np.nan)
+    low_d = np.full(1440, np.nan)
+    open_d[mins], high_d[mins], low_d[mins] = opens_a, highs_a, lows_a
+    total_stopped = total_time = 0
+    for direction in (-1, 1):
+        for length in (0, 1, 25, 140):
+            K, entry, stopped, exit_min, exit_price = h._window_walk(
+                low_d, high_d, open_d, length, 0.004, direction=direction, end_max=1438
+            )
+            checks = list(range(0, K, 7)) + [K - 1]
+            end_prices = h._fallback_prices(open_d, np.array(checks) + length)
+            stopped_seen = time_seen = 0
+            for position, m in enumerate(checks):
+                if not np.isfinite(entry[m]):
+                    assert not stopped[m]
+                    continue
+                walk = h.walk_window(
+                    mins,
+                    highs_a,
+                    lows_a,
+                    opens_a,
+                    m,
+                    length,
+                    float(entry[m]),
+                    0.004,
+                    direction=direction,
+                )
+                assert bool(stopped[m]) == walk.stopped
+                assert int(exit_min[m]) == walk.exit_min
+                if walk.stopped:
+                    stopped_seen += 1
+                    assert exit_price[m] == pytest.approx(walk.exit_price)
+                else:
+                    time_seen += 1
+                    assert exit_price[m] == pytest.approx(end_prices[position])
+            total_stopped += stopped_seen
+            total_time += time_seen
+    assert total_stopped > 0 and total_time > 0
+
+
+def test_random_control_start_minutes_layout_and_k():
+    dates = weekday_dates(date(2024, 1, 8), 8)
+    days = [dense_day(value)[0] for value in dates]
+    rets = [0.001 * ((i % 5) - 2) for i in range(8)]
+    frame = control_frame(days, rets)
+    table, control = h.random_control(frame, days, rounds=5)
+    assert table is not None
+    assert list(table.columns) == list(h.RANDOM_COLUMNS)
+    assert len(table) == 5 * 8 * 2
+    assert table.iloc[0]["round"] == 0 and table.iloc[0]["leg"] == "eu"
+    assert table.iloc[1]["leg"] == "us" and table.iloc[2]["day_index"] == 1
+    assert table.iloc[-1]["round"] == 4
+    assert table.iloc[0]["valid"] == table.iloc[1]["valid"]
+    for row in (table.iloc[0], table.iloc[3], table.iloc[2 * 16 + 5], table.iloc[-1]):
+        leg_id = 0 if row["leg"] == "eu" else 1
+        n = np.uint64(int(row["round"])) * np.uint64(2**32) + np.uint64(
+            2 * int(row["day_index"]) + leg_id
+        )
+        expected = int(h.splitmix64(np.array([n]))[0]) % int(row["K"])
+        assert int(row["start_min"]) == expected
+    friday = table[table["day_index"] == 4]
+    assert set(friday[friday["leg"] == "eu"]["K"]) == {659}
+    assert set(friday[friday["leg"] == "us"]["K"]) == {674}
+    monday = table[(table["day_index"] == 0) & (table["leg"] == "eu")]
+    assert set(monday["K"]) == {1079}
+    assert len(control["round_sr"]) == 5 and len(control["excluded_days"]) == 5
+    assert control["percentile"] is not None
+    hits = sum(
+        1
+        for value in control["round_sr"]
+        if value is not None and value <= control["actual_sr"]
+    )
+    assert control["percentile"] == pytest.approx(hits / 5)
+
+
+def test_stopped_leg_shortens_window():
+    days = [dense_day(date(2024, 1, 8))[0], dense_day(date(2024, 1, 9))[0]]
+    frame = control_frame(days, [0.01, -0.004], us_exit=500)
+    table, _ = h.random_control(frame, days, rounds=3)
+    assert table is not None
+    us = table[table["leg"] == "us"]
+    eu = table[table["leg"] == "eu"]
+    assert set(us["K"]) == {1419}
+    assert set(eu["K"]) == {1079}
+    assert (us["exit_min"] <= us["start_min"] + 20).all()
+
+
+def test_overlap_and_missing_price_exclude_days():
+    dates = weekday_dates(date(2024, 1, 8), 6)
+    days = [dense_day(value)[0] for value in dates]
+    frame = control_frame(days, [0.002, -0.001, 0.0015, -0.0005, 0.001, -0.002])
+    table, _ = h.random_control(frame, days, rounds=40)
+    assert table is not None
+    eu = table[table["leg"] == "eu"][["round", "day_index", "start_min", "valid"]]
+    us = table[table["leg"] == "us"][["round", "day_index", "start_min"]]
+    merged = eu.merge(us, on=["round", "day_index"], suffixes=("_eu", "_us"))
+    assert len(merged) == 240
+    assert not merged["valid"].all()
+    for row in merged.itertuples():
+        index = int(row.day_index)
+        eu_len = 480 - days[index].eu_entry_min
+        us_len = days[index].us_exit_min - 480
+        overlap = max(row.start_min_eu, row.start_min_us) < min(
+            row.start_min_eu + eu_len, row.start_min_us + us_len
+        )
+        assert bool(row.valid) == (not overlap)
+
+    empties = [empty_day(date(2024, 1, 8)), dense_day(date(2024, 1, 9))[0]]
+    frame2 = control_frame(empties, [0.01, -0.004])
+    table2, _ = h.random_control(frame2, empties, rounds=3)
+    assert table2 is not None
+    missing = table2[table2["day_index"] == 0]
+    assert not bool(missing["valid"].any())
+    assert bool(np.isnan(missing["a"].to_numpy()).all())
+    assert bool(np.isnan(missing["c"].to_numpy()).all())
+    assert bool(missing["start_min"].notna().to_numpy().all())
+
+
+def test_gate_d_percentile_and_not_computable():
+    dates = weekday_dates(date(2024, 1, 8), 12)
+    days = [dense_day(value)[0] for value in dates]
+    rets = [0.02 if i % 2 else -0.004 for i in range(12)]
+    frame = control_frame(days, rets)
+    _, control = h.random_control(frame, days, rounds=8, table=False)
+    assert control["actual_sr"] > 3
+    assert all(value <= control["actual_sr"] for value in control["round_sr"])
+    assert control["percentile"] == 1.0 and control["gate_d"] is True
+    flipped = control_frame(days, [-value for value in rets])
+    _, weak = h.random_control(flipped, days, rounds=8, table=False)
+    assert weak["percentile"] < 0.5 and weak["gate_d"] is False
+    blanks = [empty_day(value) for value in weekday_dates(date(2024, 1, 8), 4)]
+    dead_frame = control_frame(blanks, [0.01, -0.02, 0.005, -0.001])
+    _, dead = h.random_control(dead_frame, blanks, rounds=3, table=False)
+    assert dead["percentile"] is None and dead["gate_d"] is False
+    assert dead["excluded_days"] == [4, 4, 4]
+    assert all(value is None for value in dead["round_sr"])
