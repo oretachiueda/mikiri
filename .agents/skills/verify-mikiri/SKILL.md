@@ -1,6 +1,6 @@
 ---
 name: verify-mikiri
-description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, h005-compute, h006-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, stats/h005.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
+description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, h005-compute, h006-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, stats/h005.py, stats/h006.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
 ---
 
 # Verify Mikiri
