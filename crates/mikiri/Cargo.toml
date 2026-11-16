@@ -10,6 +10,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+jiff = "=0.2.42"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+zip = { version = "=9.6.0", default-features = false, features = ["deflate-flate2"] }
 arrow-array = { version = "60.1.0", default-features = false }
 arrow-schema = { version = "60.1.0", default-features = false }
 libm = "0.2.16"
