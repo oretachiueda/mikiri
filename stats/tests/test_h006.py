@@ -1547,6 +1547,20 @@ def test_compare_table_matches_and_reports(tmp_path):
     assert h.compare_table(swapped, path, "out") == ["out: columns differ"]
 
 
+def test_compare_table_row_count_mismatch(tmp_path):
+    path = tmp_path / "rows.parquet"
+    pq.write_table(pa.table({"n": pa.array([1, 2, 3], pa.int64())}), path)
+    shorter = pa.table({"n": pa.array([1, 2], pa.int64())})
+    assert h.compare_table(shorter, path, "rows") == ["rows: row count 2 vs 3"]
+    extra = pa.table(
+        {
+            "n": pa.array([1, 2], pa.int64()),
+            "extra": pa.array([0, 0], pa.int64()),
+        }
+    )
+    assert h.compare_table(extra, path, "rows") == ["rows: columns differ"]
+
+
 def test_verify_manifest_checks_files(tmp_path):
     digests = {}
     for name in h.RESULT_FILES:

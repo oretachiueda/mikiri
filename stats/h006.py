@@ -1674,8 +1674,13 @@ def compare_table(expected: pa.Table, path: Path, label: str) -> list[str]:
     """
     actual = pq.read_table(path)
     names = [field.name for field in expected.schema]
-    if names != actual.schema.names:
+    actual_names = list(actual.schema.names)
+    if set(names) != set(actual_names):
         return [f"{label}: columns differ"]
+    if names != actual_names:
+        return [f"{label}: columns differ"]
+    if expected.num_rows != actual.num_rows:
+        return [f"{label}: row count {expected.num_rows} vs {actual.num_rows}"]
     differences: list[str] = []
     for name in names:
         mine = _single_array(expected.column(name))
