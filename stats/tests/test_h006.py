@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import math
+import statistics
 import zipfile
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -1204,3 +1205,241 @@ def test_gate_d_percentile_and_not_computable():
     assert dead["percentile"] is None and dead["gate_d"] is False
     assert dead["excluded_days"] == [4, 4, 4]
     assert all(value is None for value in dead["round_sr"])
+
+
+def test_tail_quantiles_use_nearest_rank():
+    tails = h._tail_values([float(value) for value in range(1, 101)])
+    assert tails["p01"] == 1.0
+    assert tails["p05"] == 5.0
+    assert tails["worst"] == 1.0
+    assert tails["win_loss_ratio"] is None
+    assert tails["win_rate"] == 1.0
+    mixed = h._tail_values([-2.0, -1.0, 0.0, 3.0, 4.0, 5.0, 6.0])
+    assert mixed["p01"] == -2.0
+    assert mixed["p05"] == -2.0
+    assert mixed["worst"] == -2.0
+    assert mixed["win_loss_ratio"] == pytest.approx(4.5 / 1.5)
+    assert mixed["win_rate"] == pytest.approx(4 / 7)
+    twenty_one = h._tail_values([float(value) for value in range(-21, 0)])
+    assert twenty_one["p05"] == -20.0
+
+
+def ref_splitmix64(n):
+    mask = (1 << 64) - 1
+    v = (n ^ 20261115) & mask
+    v = (v + 0x9E3779B97F4A7C15) & mask
+    v = ((v ^ (v >> 30)) * 0xBF58476D1CE4E5B9) & mask
+    v = ((v ^ (v >> 27)) * 0x94D049BB133111EB) & mask
+    return v ^ (v >> 31)
+
+
+def ref_bootstrap(rets, rounds=1000):
+    count = len(rets)
+    draws = []
+    for d in range(rounds):
+        equity = 1.0
+        peak = 1.0
+        worst = 0.0
+        ruined = False
+        for i in range(count):
+            index = ref_splitmix64(d * 2**32 + i) % count
+            equity *= 1.0 + rets[index]
+            if equity <= 0 or not math.isfinite(equity):
+                ruined = True
+                break
+            peak = max(peak, equity)
+            worst = max(worst, 1.0 - equity / peak)
+        draws.append(1.0 if ruined else worst)
+    return sorted(draws)
+
+
+def test_bootstrap_drawdowns_match_splitmix_reference():
+    assert ref_splitmix64(0) == 13866863570256181660
+    rets = [0.01, -0.02, 0.005, -1.2, 0.03, -0.01]
+    draws = h._bootstrap_drawdowns(rets)
+    expected = ref_bootstrap(rets)
+    ruined = sum(1 for value in expected if value == 1.0)
+    assert 0 < ruined < 1000
+    assert draws.tolist() == pytest.approx(expected)
+    values = h._bootstrap_values(rets)
+    assert values["p05"] == pytest.approx(expected[49])
+    assert values["p50"] == pytest.approx(expected[499])
+    assert values["p95"] == pytest.approx(expected[949])
+
+
+def test_breakeven_multiple_linearity():
+    rows = [
+        (date(2019, 12, 2), 0.02, 1.0, 0.001, 0.0002, -0.001, 0.0001),
+        (date(2019, 12, 3), 0.01, 2.0, 0.002, 0.0003, 0.001, 0.0002),
+        (date(2019, 12, 4), -0.005, 1.5, -0.001, 0.0001, 0.0005, 0.0003),
+    ]
+    columns = ("date", "R", "leverage", "eu_a", "eu_c", "us_a", "us_c")
+    frame = pd.DataFrame(
+        {column: [row[index] for row in rows] for index, column in enumerate(columns)}
+    )
+    gains = [row[2] * (h.W_EU * row[3] + h.W_US * row[5]) for row in rows]
+    costs = [row[2] * (h.W_EU * row[4] + h.W_US * row[6]) for row in rows]
+    expected = statistics.fmean(gains) / statistics.fmean(costs)
+    breakeven = h._breakeven(frame, "recent")
+    assert breakeven["multiple"] == pytest.approx(expected)
+    assert breakeven["pip"] == pytest.approx(0.4 * expected)
+    residual = statistics.fmean(gains) - expected * statistics.fmean(costs)
+    assert residual == pytest.approx(0.0, abs=1e-15)
+    zero = [(row[0], row[1], row[2], row[3], 0.0, row[5], 0.0) for row in rows]
+    free = pd.DataFrame(
+        {column: [row[index] for row in zero] for index, column in enumerate(columns)}
+    )
+    assert h._breakeven(free, "recent") == {"multiple": None, "pip": None}
+
+
+def test_ablation_legs_sum_to_main_returns():
+    leverage = [5.0, 6.0]
+    eu_a = [0.001, -0.002]
+    us_a = [0.002, 0.001]
+    rets = [
+        lev * (h.W_EU * a_eu + h.W_US * a_us)
+        for lev, a_eu, a_us in zip(leverage, eu_a, us_a, strict=True)
+    ]
+    frame = pd.DataFrame(
+        {
+            "date": [date(2019, 12, 2), date(2019, 12, 3)],
+            "R": rets,
+            "leverage": leverage,
+            "eu_a": eu_a,
+            "eu_c": [0.0, 0.0],
+            "us_a": us_a,
+            "us_c": [0.0, 0.0],
+        }
+    )
+    eu_only = h.ablation_frame(frame, "eu")
+    us_only = h.ablation_frame(frame, "us")
+    assert eu_only["R"].tolist() == pytest.approx(
+        [lev * h.W_EU * a_eu for lev, a_eu in zip(leverage, eu_a, strict=True)]
+    )
+    assert us_only["leverage"].tolist() == leverage
+    total = eu_only["R"] + us_only["R"]
+    assert total.tolist() == pytest.approx(rets)
+    with pytest.raises(ValueError, match="invalid leg"):
+        h.ablation_frame(frame, "both")
+
+
+def test_flip_warning_logic():
+    assert h.flip_warning(0.8, 0.3) is True
+    assert h.flip_warning(0.8, -0.3) is False
+    assert h.flip_warning(-0.8, 0.3) is False
+    assert h.flip_warning(0.8, None) is False
+    assert h.flip_warning(None, 0.3) is False
+
+
+def test_yearly_median_even_count_and_seasons():
+    def sr(values):
+        return math.sqrt(252.0) * statistics.fmean(values) / statistics.stdev(values)
+
+    rets = {
+        2020: [0.02, 0.04],
+        2021: [0.01, 0.03],
+        2022: [-0.03, 0.01],
+        2023: [-0.01, 0.01],
+        2024: [0.005, 0.005],
+    }
+    frame = pd.DataFrame(
+        [
+            {
+                "date": date(year, 2, 3 + index),
+                "R": ret,
+                "us_dst": index == 0,
+            }
+            for year, values in rets.items()
+            for index, ret in enumerate(values)
+        ]
+    )
+    report = h._yearly(frame, "recent")
+    assert [entry["year"] for entry in report["years"]] == [
+        2020,
+        2021,
+        2022,
+        2023,
+        2024,
+    ]
+    assert [entry["days"] for entry in report["years"]] == [2, 2, 2, 2, 2]
+    assert report["years"][4]["sr"] is None
+    non_null = [sr(rets[year]) for year in (2020, 2021, 2022, 2023)]
+    assert report["median_sr"] == pytest.approx(statistics.median(non_null))
+    assert report["winter"]["days"] == 5 and report["summer"]["days"] == 5
+    assert report["summer"]["sr"] == pytest.approx(
+        sr([0.02, 0.01, -0.03, -0.01, 0.005])
+    )
+    assert report["winter"]["sr"] == pytest.approx(sr([0.04, 0.03, 0.01, 0.01, 0.005]))
+
+
+def test_report_common_marks_ruin_and_main_path_errors():
+    frame = frame_of(
+        [
+            (date(2019, 12, 2), 0.10, 1.0),
+            (date(2019, 12, 3), -1.0, 1.0),
+        ]
+    )
+    spy = flat_spy(date(2019, 12, 2), date(2019, 12, 3))
+    with pytest.raises(ValueError, match="equity ruined"):
+        h.account_segment(frame, spy, "recent")
+    common = h._segment_common(frame, spy, "recent")
+    assert common["ruined"] is True
+    assert common["ruin_date"] == "2019-12-03"
+    assert common["w"] is None
+    assert common["cagr_pretax"] is None and common["cagr_aftertax"] is None
+    assert common["drawdown_pretax"] is None and common["drawdown_aftertax"] is None
+    assert common["b"] == pytest.approx(0.9998 / 1.0002)
+    assert common["max_leverage"] == 1.0
+    assert common["max_leg_notional_to_equity"] == pytest.approx(h.W_EU)
+
+
+def test_segment_report_shape_and_self_checks():
+    days = synth_days(70)
+    frame = h.daily_legs(days)
+    spy = flat_spy(date(2024, 1, 8), date(2024, 4, 30), date(2024, 10, 31))
+    report = h.segment_report(frame, days, spy, "dev")
+    assert set(report) == {
+        "main",
+        "tax_rates",
+        "cost_target",
+        "breakeven",
+        "tails",
+        "bootstrap",
+        "ablations",
+        "same_bar",
+        "flip",
+        "yearly",
+    }
+    assert list(report["main"]) == list(h.COMMON_FIELDS)
+    assert [entry["rate"] for entry in report["tax_rates"]] == [0.0, 0.05]
+    cells = {(entry["pip"], entry["target"]) for entry in report["cost_target"]}
+    assert cells == {
+        (pip, target) for pip in (0.0, 0.4, 0.8, 1.5) for target in (0.30, 0.40)
+    }
+    main_cell = next(
+        entry
+        for entry in report["cost_target"]
+        if (entry["pip"], entry["target"]) == (0.4, 0.30)
+    )
+    assert main_cell["common"] == report["main"]
+    assert set(report["breakeven"]) == {"common", "multiple", "pip"}
+    assert set(report["tails"]["values"]) == {
+        "p01",
+        "p05",
+        "worst",
+        "win_loss_ratio",
+        "win_rate",
+    }
+    assert set(report["bootstrap"]["values"]) == {"p05", "p50", "p95"}
+    assert [entry["name"] for entry in report["ablations"]] == [
+        "eu_only",
+        "us_only",
+        "s0",
+    ]
+    assert report["same_bar"]["optimistic_matches"] is True
+    assert report["same_bar"]["optimistic_common"] == report["main"]
+    assert report["flip"]["warning"] is False
+    assert report["flip"]["original_sr"] is not None
+    assert report["flip"]["reversed_sr"] is not None
+    assert set(report["yearly"]["values"]) == {"years", "median_sr", "winter", "summer"}
+    assert report["yearly"]["values"]["years"][-1]["year"] == 2024

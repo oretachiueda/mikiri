@@ -8,6 +8,9 @@ Unit 3: segments with the tax ledger and pretax path, the SPY baseline, PSR,
 and the A/B/C/H gates with the accounts.parquet column layout.
 Unit 4: gate D, the random-entry control vectorized per (day, leg) over all
 start minutes at once, with the random.parquet column layout.
+Unit 5: the prereg section 8 report tables per segment (tax, cost x target,
+break-even, tails, bootstrap drawdown, ablations, same bar, flip, yearly),
+shaped like the Rust summary.json reports structure.
 """
 
 import hashlib
@@ -426,13 +429,15 @@ def walk_window(
     sigma: float,
     direction: int,
     use_stop: bool = True,
+    optimistic: bool = False,
 ) -> Walk:
     """S3 stop walk over the bars with minute in [start_min, start_min + length).
 
     The stop starts one sigma against the direction and moves to the entry
     price from the bar after a favorable one-sigma touch. A time exit is
     reported as exit_price None at the window's boundary minute; the caller
-    supplies the boundary price.
+    supplies the boundary price. With optimistic the returned values come
+    from the flag-first ordering instead of the conservative one.
     """
     end_min = start_min + length
     if not use_stop:
@@ -451,7 +456,7 @@ def walk_window(
     def favorable_touch(high_: float, low_: float) -> bool:
         return high_ >= favorable if direction > 0 else low_ <= favorable
 
-    def run(optimistic: bool) -> Walk:
+    def run(flag_first: bool) -> Walk:
         level = stop0
         flag_min = None
         move_next = False
@@ -460,14 +465,14 @@ def walk_window(
                 level = entry
                 move_next = False
             touched = favorable_touch(highs[index], lows[index])
-            if optimistic and touched and flag_min is None:
+            if flag_first and touched and flag_min is None:
                 flag_min = minute[index]
                 move_next = True
             if _stop_touch(lows[index], highs[index], level, direction):
                 gap = opens[index] < level if direction > 0 else opens[index] > level
                 price = opens[index] if gap else level
                 return Walk(True, minute[index], price, flag_min, 0, True)
-            if not optimistic and touched and flag_min is None:
+            if not flag_first and touched and flag_min is None:
                 flag_min = minute[index]
                 move_next = True
         return Walk(False, end_min, None, flag_min, 0, True)
@@ -478,19 +483,30 @@ def walk_window(
     else:
         dual = (high[lo:hi] >= stop0) & (low[lo:hi] <= favorable)
     double_touches = int(dual.sum())
-    optimistic = run(True)
+    optimistic_run = run(True)
     matches = (
         conservative.stopped,
         conservative.exit_min,
         conservative.exit_price,
-    ) == (optimistic.stopped, optimistic.exit_min, optimistic.exit_price)
-    return Walk(
-        stopped=conservative.stopped,
-        exit_min=conservative.exit_min,
-        exit_price=conservative.exit_price,
-        flag_min=conservative.flag_min,
-        double_touches=double_touches,
-        optimistic_matches=matches,
+    ) == (optimistic_run.stopped, optimistic_run.exit_min, optimistic_run.exit_price)
+    return (
+        Walk(
+            stopped=optimistic_run.stopped,
+            exit_min=optimistic_run.exit_min,
+            exit_price=optimistic_run.exit_price,
+            flag_min=optimistic_run.flag_min,
+            double_touches=double_touches,
+            optimistic_matches=matches,
+        )
+        if optimistic
+        else Walk(
+            stopped=conservative.stopped,
+            exit_min=conservative.exit_min,
+            exit_price=conservative.exit_price,
+            flag_min=conservative.flag_min,
+            double_touches=double_touches,
+            optimistic_matches=matches,
+        )
     )
 
 
@@ -523,12 +539,22 @@ DAY_COLUMNS = (
 )
 
 
-def daily_legs(days: list[Day], pip: float = 0.4, target: float = 0.30) -> pd.DataFrame:
+def daily_legs(
+    days: list[Day],
+    pip: float = 0.4,
+    target: float = 0.30,
+    *,
+    stops: bool = True,
+    flip: bool = False,
+    optimistic: bool = False,
+) -> pd.DataFrame:
     """Per-calculation-day leg table with the days.parquet columns.
 
     The first PREPARATION_DAYS calculation days carry no sigma and no walk:
     their r is the no-stop return. Volatility estimates always exclude the
-    current day and use the previous 60 values.
+    current day and use the previous 60 values. Report modes: stops=False
+    drops the stop walk (R6 S0), flip reverses both leg directions (R7),
+    optimistic takes the flag-first walk ordering (R15).
     """
     half_cost = pip / 2 * 1e-4
     nostop_history: dict[str, list[float]] = {"eu": [], "us": []}
@@ -545,7 +571,7 @@ def daily_legs(days: list[Day], pip: float = 0.4, target: float = 0.30) -> pd.Da
         walked = index >= PREPARATION_DAYS
         legs: dict[str, dict] = {}
         for leg in ("eu", "us"):
-            direction = DIRECTION[leg]
+            direction = -DIRECTION[leg] if flip else DIRECTION[leg]
             if leg == "eu":
                 entry_min, exit_min = day.eu_entry_min, 480
                 entry, fallback = day.eu_entry_price, day.eu_entry_fallback
@@ -560,23 +586,27 @@ def daily_legs(days: list[Day], pip: float = 0.4, target: float = 0.30) -> pd.Da
                 sigma = float(np.std(nostop_history[leg][-60:], ddof=1))
                 if not math.isfinite(sigma) or sigma <= 0:
                     raise ValueError(f"sigma_leg not positive for {leg} on {day.date}")
-                stop_initial = entry * math.exp(-direction * sigma)
-                walk = walk_window(
-                    day.mins,
-                    day.high,
-                    day.low,
-                    day.open,
-                    entry_min,
-                    exit_min - entry_min,
-                    entry,
-                    sigma,
-                    direction,
-                )
-                stopped = walk.stopped
-                exit_min = walk.exit_min
-                fill = walk.exit_price
-                exit_price = boundary_exit if fill is None else fill
-                flag_min = walk.flag_min
+                if stops:
+                    stop_initial = entry * math.exp(-direction * sigma)
+                    walk = walk_window(
+                        day.mins,
+                        day.high,
+                        day.low,
+                        day.open,
+                        entry_min,
+                        exit_min - entry_min,
+                        entry,
+                        sigma,
+                        direction,
+                        optimistic=optimistic,
+                    )
+                    stopped = walk.stopped
+                    exit_min = walk.exit_min
+                    fill = walk.exit_price
+                    exit_price = boundary_exit if fill is None else fill
+                    flag_min = walk.flag_min
+                else:
+                    stopped, exit_price = False, boundary_exit
             else:
                 stopped, exit_price = False, boundary_exit
             r = direction * math.log(exit_price / entry)
@@ -703,6 +733,53 @@ def _drawdown(path: list[float]) -> float:
     return worst
 
 
+def _equity_path(
+    rets: list[float],
+    days: list[date],
+    name: str,
+    tax_rate: float,
+    strict: bool = True,
+) -> tuple[list[dict], list[float], date | None]:
+    """Walk equity from 1 through rets with calendar-year tax settling.
+
+    Returns (accounts rows, pretax path, ruin date). Strict raises on ruin
+    (R20, the main path); non-strict stops at the ruin day so report rows can
+    mark it and continue.
+    """
+    ledger = TaxLedger(tax_rate)
+    accounts: list[dict] = []
+    pretax_path: list[float] = []
+    equity = 1.0
+    pretax = 1.0
+    year_income = 0.0
+    for position, (day, ret) in enumerate(zip(days, rets, strict=True)):
+        year_income += equity * ret
+        year_end = position + 1 == len(days) or days[position + 1].year != day.year
+        tax = ledger.settle(day.year, year_income) if year_end else 0.0
+        if year_end:
+            year_income = 0.0
+        start = equity
+        equity = equity * (1.0 + ret) - tax
+        pretax *= 1.0 + ret
+        pretax_path.append(pretax)
+        accounts.append(
+            {
+                "segment": name,
+                "date": day,
+                "equity_start": start,
+                "R": ret,
+                "tax_paid": tax,
+                "equity_end": equity,
+                "equity_pretax": pretax,
+            }
+        )
+        if not math.isfinite(equity) or equity <= 0:
+            if strict:
+                raise ValueError(f"segment {name} equity ruined on {day}")
+            return accounts, pretax_path, day
+    return accounts, pretax_path, None
+
+
 def account_segment(
     frame: pd.DataFrame,
     spy_rows: list[dict],
@@ -719,36 +796,9 @@ def account_segment(
         raise ValueError(f"segment {name} has no calculation days")
     if pd.isna(rows.iloc[0]["leverage"]):
         raise ValueError(f"segment {name} starts before leverage exists")
-    ledger = TaxLedger(tax_rate)
     rets = [float(value) for value in rows["R"]]
-    accounts: list[dict] = []
-    pretax_path: list[float] = []
-    equity = 1.0
-    pretax = 1.0
-    year_income = 0.0
-    for position, (day, ret) in enumerate(zip(days, rets, strict=True)):
-        year_income += equity * ret
-        year_end = position + 1 == len(days) or days[position + 1].year != day.year
-        tax = ledger.settle(day.year, year_income) if year_end else 0.0
-        if year_end:
-            year_income = 0.0
-        start = equity
-        equity = equity * (1.0 + ret) - tax
-        if not math.isfinite(equity) or equity <= 0:
-            raise ValueError(f"segment {name} equity ruined on {day}")
-        pretax *= 1.0 + ret
-        pretax_path.append(pretax)
-        accounts.append(
-            {
-                "segment": name,
-                "date": day,
-                "equity_start": start,
-                "R": ret,
-                "tax_paid": tax,
-                "equity_end": equity,
-                "equity_pretax": pretax,
-            }
-        )
+    accounts, pretax_path, _ = _equity_path(rets, days, name, tax_rate)
+    equity = accounts[-1]["equity_end"]
     spy_slice = [bar for bar in spy_rows if first <= bar["date"] <= last]
     if not spy_slice:
         raise ValueError(f"segment {name} has no SPY rows")
@@ -1022,3 +1072,361 @@ def random_control(
         }
     )
     return result[list(RANDOM_COLUMNS)], control
+
+
+COMMON_FIELDS = (
+    "ruined",
+    "ruin_date",
+    "w",
+    "b",
+    "cagr_pretax",
+    "cagr_aftertax",
+    "drawdown_pretax",
+    "drawdown_aftertax",
+    "max_leverage",
+    "max_leg_notional_to_equity",
+)
+TAX_RATES = (0.0, 0.05)
+COST_PIPS = (0.0, 0.4, 0.8, 1.5)
+COST_TARGETS = (0.30, 0.40)
+BOOTSTRAP_ROUNDS = 1000
+
+
+def _segment_rows(frame: pd.DataFrame, name: str) -> pd.DataFrame:
+    """A segment's calculation days; preparation rows carry no trade."""
+    first, last = SEGMENTS[name]
+    rows = frame[(frame["date"] >= first) & (frame["date"] <= last)]
+    rows = rows[rows["R"].notna()]
+    if len(rows) == 0:
+        raise ValueError(f"segment {name} has no calculation days")
+    return rows
+
+
+def _sr(values: list[float]) -> float | None:
+    """Annualized Sharpe of daily returns; None when not computable (R9)."""
+    if len(values) < 2:
+        return None
+    spread = statistics.stdev(values)
+    if not math.isfinite(spread) or spread <= 0:
+        return None
+    return math.sqrt(252.0) * statistics.fmean(values) / spread
+
+
+def _median(values: list[float | None]) -> float | None:
+    kept = sorted(value for value in values if value is not None)
+    return statistics.median(kept) if kept else None
+
+
+def _segment_common(
+    frame: pd.DataFrame,
+    spy_rows: list[dict],
+    name: str,
+    tax_rate: float = TAX_RATE,
+) -> dict[str, float | str | bool | None]:
+    """The ten common report fields for one frame over one segment (R20)."""
+    rows = _segment_rows(frame, name)
+    days = list(rows["date"])
+    rets = [float(value) for value in rows["R"]]
+    accounts, pretax_path, ruin = _equity_path(rets, days, name, tax_rate, strict=False)
+    first, last = SEGMENTS[name]
+    spy_slice = [bar for bar in spy_rows if first <= bar["date"] <= last]
+    if not spy_slice:
+        raise ValueError(f"segment {name} has no SPY rows")
+    b = benchmark(spy_slice)[0][-1]
+    max_leverage = float(rows["leverage"].astype(float).max())
+    if ruin is not None:
+        values: dict[str, float | str | bool | None] = {
+            "ruined": True,
+            "ruin_date": ruin.isoformat(),
+            "w": None,
+            "b": b,
+            "cagr_pretax": None,
+            "cagr_aftertax": None,
+            "drawdown_pretax": None,
+            "drawdown_aftertax": None,
+            "max_leverage": max_leverage,
+            "max_leg_notional_to_equity": max_leverage * W_EU,
+        }
+    else:
+        elapsed = (days[-1] - days[0]).days
+
+        def cagr(final: float) -> float | None:
+            return final ** (365.0 / elapsed) - 1.0 if elapsed > 0 else None
+
+        values = {
+            "ruined": False,
+            "ruin_date": None,
+            "w": accounts[-1]["equity_end"],
+            "b": b,
+            "cagr_pretax": cagr(pretax_path[-1]),
+            "cagr_aftertax": cagr(accounts[-1]["equity_end"]),
+            "drawdown_pretax": _drawdown(pretax_path),
+            "drawdown_aftertax": _drawdown([row["equity_end"] for row in accounts]),
+            "max_leverage": max_leverage,
+            "max_leg_notional_to_equity": max_leverage * W_EU,
+        }
+    return {field: values[field] for field in COMMON_FIELDS}
+
+
+def _tail_values(values: list[float]) -> dict[str, float | None]:
+    """Loss-tail quantiles by integer nearest rank (R8); zero wins nothing."""
+    values = [float(value) for value in values]
+    ordered = sorted(values)
+    count = len(ordered)
+
+    def rank(percent: int) -> float:
+        return ordered[(count * percent + 99) // 100 - 1]
+
+    gains = [value for value in values if value > 0]
+    losses = [value for value in values if value < 0]
+    return {
+        "p01": rank(1),
+        "p05": rank(5),
+        "worst": ordered[0],
+        "win_loss_ratio": statistics.fmean(gains) / abs(statistics.fmean(losses))
+        if gains and losses
+        else None,
+        "win_rate": len(gains) / count,
+    }
+
+
+def _tails(frame: pd.DataFrame, name: str) -> dict[str, float | None]:
+    rows = _segment_rows(frame, name)
+    xs: list[float] = []
+    for eu_a, eu_c, us_a, us_c in zip(
+        rows["eu_a"], rows["eu_c"], rows["us_a"], rows["us_c"], strict=True
+    ):
+        xs.append(float(eu_a) - float(eu_c))
+        xs.append(float(us_a) - float(us_c))
+    return _tail_values(xs)
+
+
+def _bootstrap_drawdowns(
+    rets: list[float], rounds: int = BOOTSTRAP_ROUNDS
+) -> np.ndarray:
+    """Sorted per-round maximum drawdowns (R10); a ruined path scores 1."""
+    count = len(rets)
+    base = np.asarray(rets, dtype=float)
+    d = np.arange(rounds, dtype=np.uint64)[:, None]
+    i = np.arange(count, dtype=np.uint64)[None, :]
+    idx = (splitmix64(d * np.uint64(2**32) + i) % np.uint64(count)).astype(np.int64)
+    equity = np.cumprod(base[idx] + 1.0, axis=1)
+    peak = np.maximum(1.0, np.maximum.accumulate(equity, axis=1))
+    draws = 1.0 - equity / peak
+    draws[~np.isfinite(draws)] = 1.0
+    draws[equity <= 0] = 1.0
+    worst = draws.max(axis=1)
+    worst[~np.isfinite(worst)] = 1.0
+    return np.sort(worst)
+
+
+def _bootstrap_values(rets: list[float]) -> dict[str, float]:
+    draws = _bootstrap_drawdowns(rets)
+    return {
+        "p05": float(draws[49]),
+        "p50": float(draws[499]),
+        "p95": float(draws[949]),
+    }
+
+
+def _breakeven(frame: pd.DataFrame, name: str) -> dict[str, float | None]:
+    """Cost multiple k* with mean R = 0 and its pip equivalent (R12)."""
+    rows = _segment_rows(frame, name)
+    gains = [
+        float(leverage) * (W_EU * float(eu_a) + W_US * float(us_a))
+        for leverage, eu_a, us_a in zip(
+            rows["leverage"], rows["eu_a"], rows["us_a"], strict=True
+        )
+    ]
+    costs = [
+        float(leverage) * (W_EU * float(eu_c) + W_US * float(us_c))
+        for leverage, eu_c, us_c in zip(
+            rows["leverage"], rows["eu_c"], rows["us_c"], strict=True
+        )
+    ]
+    denominator = statistics.fmean(costs)
+    if denominator == 0:
+        return {"multiple": None, "pip": None}
+    multiple = statistics.fmean(gains) / denominator
+    return {"multiple": multiple, "pip": 0.4 * multiple}
+
+
+def _yearly(frame: pd.DataFrame, name: str) -> dict:
+    rows = _segment_rows(frame, name)
+    by_year: dict[int, list[float]] = {}
+    winter: list[float] = []
+    summer: list[float] = []
+    for day, ret, dst in zip(rows["date"], rows["R"], rows["us_dst"], strict=True):
+        value = float(ret)
+        by_year.setdefault(day.year, []).append(value)
+        (summer if dst else winter).append(value)
+    years = [
+        {"year": year, "days": len(values), "sr": _sr(values)}
+        for year, values in sorted(by_year.items())
+    ]
+    return {
+        "years": years,
+        "median_sr": _median([entry["sr"] for entry in years]),
+        "winter": {"days": len(winter), "sr": _sr(winter)},
+        "summer": {"days": len(summer), "sr": _sr(summer)},
+    }
+
+
+def ablation_frame(frame: pd.DataFrame, leg: str) -> pd.DataFrame:
+    """R6 leg ablation: the missing leg contributes zero w*(a - c)."""
+    if leg not in ("eu", "us"):
+        raise ValueError("invalid leg")
+    weight = W_EU if leg == "eu" else W_US
+    result = frame.copy()
+    result["R"] = (
+        result["leverage"] * weight * (result[f"{leg}_a"] - result[f"{leg}_c"])
+    )
+    return result
+
+
+def _same_bar(frame: pd.DataFrame, days: list[Day], name: str) -> tuple[int, bool]:
+    """Re-walk a segment counting double touches and optimistic agreement (R15)."""
+    rows = _segment_rows(frame, name)
+    by_date = {day.date: day for day in days}
+    touches = 0
+    matches = True
+    for (
+        day_date,
+        eu_entry,
+        us_exit,
+        eu_entry_price,
+        eu_sigma,
+        us_entry_price,
+        us_sigma,
+    ) in zip(
+        rows["date"],
+        rows["eu_entry_min"],
+        rows["us_exit_min_boundary"],
+        rows["eu_entry_price"],
+        rows["eu_sigma"],
+        rows["us_entry_price"],
+        rows["us_sigma"],
+        strict=True,
+    ):
+        day = by_date[day_date]
+        legs = (
+            ("eu", int(eu_entry), 480, float(eu_entry_price), float(eu_sigma)),
+            ("us", 480, int(us_exit), float(us_entry_price), float(us_sigma)),
+        )
+        for leg, entry_min, exit_min, entry, sigma in legs:
+            walk = walk_window(
+                day.mins,
+                day.high,
+                day.low,
+                day.open,
+                entry_min,
+                exit_min - entry_min,
+                entry,
+                sigma,
+                DIRECTION[leg],
+            )
+            touches += walk.double_touches
+            matches = matches and walk.optimistic_matches
+    return touches, matches
+
+
+def flip_warning(original_sr: float | None, reversed_sr: float | None) -> bool:
+    """R7: warn when the original and the reversed strategy both profit."""
+    return bool(
+        original_sr is not None
+        and reversed_sr is not None
+        and original_sr > 0
+        and reversed_sr > 0
+    )
+
+
+def segment_report(
+    frame: pd.DataFrame,
+    days: list[Day],
+    spy_rows: list[dict],
+    name: str,
+    tax_rate: float = TAX_RATE,
+) -> dict:
+    """One segment's prereg section 8 tables, summary.json-shaped."""
+    common = _segment_common(frame, spy_rows, name, tax_rate)
+    rows = _segment_rows(frame, name)
+    rets = [float(value) for value in rows["R"]]
+    cost_cells: list[dict] = []
+    for pip in COST_PIPS:
+        for target in COST_TARGETS:
+            cell = _segment_common(
+                daily_legs(days, pip=pip, target=target), spy_rows, name, tax_rate
+            )
+            if (pip, target) == (0.4, 0.30) and cell != common:
+                raise ValueError(f"cost_target self-check failed for segment {name}")
+            cost_cells.append({"pip": pip, "target": target, "common": cell})
+    touches, matches = _same_bar(frame, days, name)
+    optimistic_common = _segment_common(
+        daily_legs(days, optimistic=True), spy_rows, name, tax_rate
+    )
+    if matches and optimistic_common != common:
+        raise ValueError(f"same_bar self-check failed for segment {name}")
+    flipped = daily_legs(days, flip=True)
+    flip_rets = [float(value) for value in _segment_rows(flipped, name)["R"]]
+    original_sr = _sr(rets)
+    reversed_sr = _sr(flip_rets)
+    return {
+        "main": common,
+        "tax_rates": [
+            {"rate": rate, "common": _segment_common(frame, spy_rows, name, rate)}
+            for rate in TAX_RATES
+        ],
+        "cost_target": cost_cells,
+        "breakeven": {"common": common, **_breakeven(frame, name)},
+        "tails": {"common": common, "values": _tails(frame, name)},
+        "bootstrap": {"common": common, "values": _bootstrap_values(rets)},
+        "ablations": [
+            {
+                "name": "eu_only",
+                "common": _segment_common(
+                    ablation_frame(frame, "eu"), spy_rows, name, tax_rate
+                ),
+            },
+            {
+                "name": "us_only",
+                "common": _segment_common(
+                    ablation_frame(frame, "us"), spy_rows, name, tax_rate
+                ),
+            },
+            {
+                "name": "s0",
+                "common": _segment_common(
+                    daily_legs(days, stops=False), spy_rows, name, tax_rate
+                ),
+            },
+        ],
+        "same_bar": {
+            "common": common,
+            "optimistic_common": optimistic_common,
+            "double_touches": touches,
+            "optimistic_matches": matches,
+        },
+        "flip": {
+            "common": _segment_common(flipped, spy_rows, name, tax_rate),
+            "original_sr": original_sr,
+            "reversed_sr": reversed_sr,
+            "warning": flip_warning(original_sr, reversed_sr),
+        },
+        "yearly": {"common": common, "values": _yearly(frame, name)},
+    }
+
+
+def segment_reports(
+    frame: pd.DataFrame,
+    days: list[Day],
+    spy_rows: list[dict],
+    stage: str = "dev",
+    tax_rate: float = TAX_RATE,
+) -> dict[str, dict]:
+    """Report tables for every segment of the stage."""
+    if stage not in STAGE_SEGMENTS:
+        raise ValueError("invalid stage")
+    return {
+        name: segment_report(frame, days, spy_rows, name, tax_rate)
+        for name in STAGE_SEGMENTS[stage]
+    }
