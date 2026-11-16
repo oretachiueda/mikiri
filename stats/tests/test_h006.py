@@ -1322,6 +1322,39 @@ def test_overlap_and_missing_price_exclude_days():
     assert bool(missing["start_min"].notna().to_numpy().all())
 
 
+def test_stopped_leg_with_missing_exit_boundary_is_invalid():
+    dates = weekday_dates(date(2024, 1, 8), 3)
+    eu_len = 480 - h.ny_minutes(dates[1])[0]
+    n = np.uint64(2 * 1)  # round 0, day_index 1, eu leg
+    m = int(h.splitmix64(np.array([n]))[0]) % (1438 - eu_len + 1)
+    days = [dense_day(value)[0] for value in dates]
+    crafted = dense_day(
+        dates[1],
+        spike_minutes=(m + 5,),
+        drop_minutes=range(m + eu_len - 5, m + eu_len + 1),
+    )[0]
+    days[1] = crafted
+    open_d = np.full(1440, np.nan)
+    high_d = np.full(1440, np.nan)
+    low_d = np.full(1440, np.nan)
+    open_d[crafted.mins] = crafted.open
+    high_d[crafted.mins] = crafted.high
+    low_d[crafted.mins] = crafted.low
+    walk = h._window_walk(low_d, high_d, open_d, eu_len, 0.004, -1, 1438)
+    assert walk[2][m], "a stop is hit inside the window before the exit boundary"
+    frame = control_frame(days, [0.01, -0.004, 0.002])
+    table, _ = h.random_control(frame, days, rounds=1)
+    assert table is not None
+    hit = table[table["day_index"] == 1]
+    assert not hit["valid"].any()
+    eu = hit[hit["leg"] == "eu"]
+    assert eu["start_min"].notna().all()
+    assert eu["exit_min"].isna().all()
+    assert eu["stopped"].isna().all()
+    assert eu["a"].isna().all() and eu["c"].isna().all()
+    assert table[table["day_index"] == 2]["valid"].all()
+
+
 def test_gate_d_percentile_and_not_computable():
     dates = weekday_dates(date(2024, 1, 8), 12)
     days = [dense_day(value)[0] for value in dates]
