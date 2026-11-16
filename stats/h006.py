@@ -28,6 +28,7 @@ import io
 import itertools
 import json
 import math
+import re
 import statistics
 import sys
 import warnings
@@ -57,6 +58,7 @@ CUTOFFS = {"dev": b"20241031", "holdout": b"20261030"}
 STAGE_ZIPS = {"dev": DEV_ZIPS, "holdout": ALL_ZIPS}
 CSV_COLUMNS = ("stamp", "open", "high", "low", "close", "volume")
 STAMP_PATTERN = r"\d{8} \d{6}"
+STAMP_BYTES_PATTERN = re.compile(rb"\d{8} \d{6}")
 
 
 @dataclass(frozen=True)
@@ -101,11 +103,10 @@ def _zip_lines(text: bytes, cutoff: bytes) -> list[bytes]:
     return lines
 
 
-def _line_stamp(line: bytes) -> int | None:
-    try:
-        return int(line[:8]) * 1_000_000 + int(line[9:15])
-    except ValueError:
-        return None
+def _line_stamp(name: str, line: bytes) -> int:
+    if STAMP_BYTES_PATTERN.fullmatch(line[:15]) is None:
+        raise ValueError(f"malformed HistData timestamp in {name}")
+    return int(line[:8]) * 1_000_000 + int(line[9:15])
 
 
 def _stamp_text(stamp: int) -> str:
@@ -124,16 +125,14 @@ class _RepeatFilter:
         self.stamps = array.array("q")
         self.ends = array.array("q")
 
-    def feed(self, lines: list[bytes]) -> tuple[list[bytes], list[str]]:
+    def feed(self, name: str, lines: list[bytes]) -> tuple[list[bytes], list[str]]:
         """Filter one zip's lines; return the kept lines and dropped stamps."""
         kept_lines: list[bytes] = []
         dropped: list[str] = []
         stamps, ends, kept = self.stamps, self.ends, self.kept
         for line in lines:
-            stamp = _line_stamp(line)
-            if stamp is None:
-                kept_lines.append(line)
-            elif not stamps or stamp > stamps[-1]:
+            stamp = _line_stamp(name, line)
+            if not stamps or stamp > stamps[-1]:
                 kept += line
                 stamps.append(stamp)
                 ends.append(len(kept))
@@ -212,7 +211,7 @@ def read_histdata(directory: Path, stage: str) -> Bars:
         lines = _zip_lines(text, CUTOFFS[stage])
         if any(line.count(b";") != len(CSV_COLUMNS) - 1 for line in lines):
             raise ValueError(f"malformed HistData line in {name}")
-        kept, dropped = repeats.feed(lines)
+        kept, dropped = repeats.feed(name, lines)
         duplicates += dropped
         piece = _parse_zip(name, kept)
         stamps.append(piece["stamp"])
