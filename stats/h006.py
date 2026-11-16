@@ -1881,8 +1881,8 @@ def verify_manifest(directory: Path) -> str:
 
 
 def _input_hashes(histdata_dir: Path, spy: Path) -> dict[str, str]:
-    """SHA-256 map of the dev-run input files: the dev zips and SPY.json."""
-    hashes = {name: digest(histdata_dir / name) for name in STAGE_ZIPS["dev"]}
+    """SHA-256 map of the run's input files: every zip in the directory and SPY.json."""
+    hashes = {path.name: digest(path) for path in sorted(histdata_dir.glob("*.zip"))}
     hashes["SPY.json"] = digest(spy)
     return hashes
 
