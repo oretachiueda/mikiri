@@ -19,6 +19,6 @@ Run `.agents/skills/verify-mikiri/drive-h006.sh` from the repository root. It bu
 
 ## Gotchas
 
-- Known difference (pending adjudication):
-
-`summary.reports.<segment>.same_bar.double_touches`: Python reads prereg R15 literally (every bar in the leg window spanning both the stop and the favorable 1σ level) and reports 1598 dev / 552 recent on synthetic inputs; Rust reports 1457 / 423. Engineered straddle probes show Rust counts a same-bar double touch only at or before the conservative walk's own stop exit, but that reading predicts 545 / 190 on natural data, so the exact Rust rule is not pinned down. See the H006 Python report for the full case.
+- The holdout dev-run input-hash check hashes every zip present in the histdata directory plus SPY.json (matching Rust), not just the stage's cutoff zips.
+- The dev-envelope summary check inside the holdout compares with the same numeric tolerance as the match verdict, not exact JSON equality; the two summaries differ in the last float digits.
+- The whole dev recompute takes about 37 s and about 1.8 GB peak RSS on the synthetic full history.
