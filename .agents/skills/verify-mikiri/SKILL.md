@@ -47,7 +47,7 @@ Run `.agents/skills/verify-mikiri/drive-h005.sh` for both H005 stages, independe
 
 Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Drive its offline argument and connection-failure paths with `features/ib-probe.md`. A real connection requires human-run TWS and explicit authorization; the skill does not drive it.
 
-Run `cargo build --locked -p paper-order` and use `features/paper-order.md` for offline argument, config, kill-switch, and market-hours refusals. Real TWS status and orders are human-run; the skill never drives them.
+Run `cargo build --locked -p paper-order` and use `features/paper-order.md` for offline argument, config, kill-switch, and market-hours refusals, plus synthetic cache quote-gating and append-only terminal-outcome regressions. Real TWS status and orders are human-run; the skill never drives them.
 
 Error paths and the other entry points are in `features/`. Each recipe there is a literal command with its expected output.
 
