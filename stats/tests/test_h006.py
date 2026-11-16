@@ -156,7 +156,9 @@ def test_read_rejects_missing_csv_member(tmp_path):
         ("20240115 090000;1.3;1.3;1.3;-1.0;0", "price"),
         ("20240115 090000;nan;1.3;1.3;1.3;0", "value"),
         ("20240115 090000;1.3;1.3;1.3;inf;0", "value"),
-        ("20240115 090030;1.3;1.3;1.3;1.3;0", "seconds"),
+        ("20240115 090030;1.3;1.3;1.3;1.3;0", "malformed HistData time"),
+        ("20240115 240000;1.3;1.3;1.3;1.3;0", "malformed HistData time"),
+        ("20240115 126100;1.3;1.3;1.3;1.3;0", "malformed HistData time"),
     ],
 )
 def test_read_rejects_malformed_values(tmp_path, bad_line, reason):
@@ -327,6 +329,11 @@ def test_summer_time_mismatch_weeks_shorten_the_european_leg():
     assert h.ny_minutes(date(2024, 1, 8))[0] == 120
     for day, eu in ((date(2024, 3, 18), 5), (date(2024, 6, 10), 6)):
         assert 480 - h.ny_minutes(day)[0] == eu * 60
+
+
+def test_validate_clock_round_trip_on_plain_weekday_bars():
+    plain = flat(20240110, 0, 1440)
+    h.validate_clock(make_bars(plain).stamp)
 
 
 def test_validate_clock_round_trip_and_fold_handling():

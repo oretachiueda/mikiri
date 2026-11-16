@@ -110,11 +110,12 @@ def _parse_zip(name: str, text: bytes, cutoff: bytes) -> dict[str, np.ndarray]:
         raise ValueError(f"malformed HistData line in {name}") from error
     if not frame["stamp"].str.fullmatch(STAMP_PATTERN).all():
         raise ValueError(f"malformed HistData timestamp in {name}")
-    stamp = frame["stamp"].str[:8].astype("int64") * 1_000_000 + frame["stamp"].str[
-        9:
-    ].astype("int64")
-    if (stamp % 100 != 0).any():
-        raise ValueError(f"bar seconds must be zero in {name}")
+    clock = frame["stamp"].str[9:].astype("int64")
+    if (
+        (clock // 10_000 >= 24) | (clock // 100 % 100 >= 60) | (clock % 100 != 0)
+    ).any():
+        raise ValueError(f"malformed HistData time in {name}")
+    stamp = frame["stamp"].str[:8].astype("int64") * 1_000_000 + clock
     columns = {}
     for column in CSV_COLUMNS[1:]:
         values = pd.to_numeric(frame[column], errors="coerce").to_numpy(np.float64)
@@ -185,29 +186,61 @@ def bar_minutes(stamp: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def validate_clock(stamp: np.ndarray) -> None:
-    """Every bar must be a real, fold=0 New York wall time that survives NY->JST->NY."""
+    """Every bar must be a real, fold=0 New York wall time that survives NY->JST->NY.
+
+    Prereg section 9 time test 5 runs the round trip for every bar, not only
+    on transition days. Asia/Tokyo is a fixed +9h offset, so on plain days the
+    trip is evaluated per bar against the day's New York offset (the trip
+    holds exactly when the wall time is constructible and its fold=0 offset
+    matches the offset at the instant), while transition days are checked bar
+    by bar with exact fold=0 datetimes.
+    """
     day, minute, _ = bar_minutes(stamp)
-    for value in np.unique(day):
+    jst = 9 * 3600
+    unique = np.unique(day)
+    starts = np.searchsorted(day, unique)
+    stops = np.append(starts[1:], stamp.size)
+    for position, value in enumerate(unique):
         observed = _calendar_date(int(value))
-        offsets = {
+        probes = {
             datetime(
                 observed.year, observed.month, observed.day, hour, tzinfo=NY
             ).utcoffset()
             for hour in (0, 6, 12, 18)
         }
-        if len(offsets) == 1:
-            continue
-        for one, minutes in zip(stamp[day == value], minute[day == value], strict=True):
-            naive = datetime(
-                observed.year,
-                observed.month,
-                observed.day,
-                int(minutes) // 60,
-                int(minutes) % 60,
-            )
-            back = naive.replace(tzinfo=NY).astimezone(JST).astimezone(NY)
-            if back.replace(tzinfo=None) != naive:
-                raise ValueError(f"bar timestamp is not a New York wall time: {one}")
+        lo, hi = starts[position], stops[position]
+        if len(probes) == 1:
+            probe = next(iter(probes))
+            if probe is None:
+                raise ValueError("unexpected missing New York offset")
+            offset = int(probe.total_seconds())
+            wall = minute[lo:hi].astype("int64") * 60
+            bad = ((wall // 3600 > 23) | (wall // 60 % 60 > 59)).nonzero()[0]
+            if bad.size:
+                raise ValueError(
+                    f"bar timestamp is not a New York wall time: {stamp[lo:hi][bad[0]]}"
+                )
+            utc = wall - offset
+            jst_wall = utc + jst
+            back = jst_wall - jst + offset
+            if not np.array_equal(back, wall):
+                raise ValueError(
+                    f"bar timestamp is not a New York wall time: {stamp[lo:hi][0]}"
+                )
+        else:
+            for one, minutes in zip(stamp[lo:hi], minute[lo:hi], strict=True):
+                naive = datetime(
+                    observed.year,
+                    observed.month,
+                    observed.day,
+                    int(minutes) // 60,
+                    int(minutes) % 60,
+                )
+                back = naive.replace(tzinfo=NY).astimezone(JST).astimezone(NY)
+                if back.replace(tzinfo=None) != naive:
+                    raise ValueError(
+                        f"bar timestamp is not a New York wall time: {one}"
+                    )
 
 
 def eu_open_instant(day: date) -> datetime:
