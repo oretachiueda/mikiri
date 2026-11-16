@@ -1903,7 +1903,10 @@ def require_holdout(
     if envelope.get("results_sha256") != results_digest:
         raise ValueError("dev envelope results hash mismatch")
     actual = json.loads((dev_match.parent / "summary.json").read_text())
-    if any(envelope.get(key) != actual for key in ("rust_summary", "python_summary")):
+    if any(
+        compare_tree(envelope.get(key), actual, f"dev envelope {key}")
+        for key in ("rust_summary", "python_summary")
+    ):
         raise ValueError("dev envelope summary mismatch")
     records = [
         json.loads(line) for line in ledger.read_text().splitlines() if line.strip()
