@@ -1,6 +1,6 @@
 use super::{
     daily::{self, Daily, Mode, Order, WEIGHTS},
-    input::{Bar, Day, SeasonClock, Stage},
+    input::{Bar, Day, DuplicateLinesRemoved, SeasonClock, Stage},
     random::RandomSummary,
     segments::{self, Computed, Segment},
     splitmix64,
@@ -208,6 +208,7 @@ pub struct SummaryInput<'a> {
     pub stage: Stage,
     pub input_hashes: &'a BTreeMap<String, String>,
     pub raw_bar_count: usize,
+    pub duplicate_lines_removed: &'a DuplicateLinesRemoved,
     pub removed: &'a [jiff::civil::DateTime],
     pub clock: &'a [SeasonClock; 2],
     pub bars: &'a [Bar],
@@ -377,6 +378,7 @@ pub fn assemble(input: &SummaryInput<'_>) -> Result<Value> {
     };
     Ok(json!({
         "stage":stage,"input_sha256":input.input_hashes,
+        "duplicate_lines_removed":{"count":input.duplicate_lines_removed.count,"timestamps":&input.duplicate_lines_removed.timestamps},
         "counts":{"bars_input":input.raw_bar_count,"bars_clean":input.bars.len(),"removed_bars":input.removed.len(),"calculation_days":input.daily.len(),"excluded_days":excluded.len()},
         "first_calculation_day":input.daily.first().map(|d|d.date.to_string()),"excluded_days":excluded,
         "clock_check":{"winter":&input.clock[0],"summer":&input.clock[1]},
@@ -593,10 +595,12 @@ mod tests {
             },
         ];
         let hashes = BTreeMap::from([("synthetic.zip".into(), "0".repeat(64))]);
+        let removed_dup = DuplicateLinesRemoved::default();
         let input = SummaryInput {
             stage: Stage::Dev,
             input_hashes: &hashes,
             raw_bar_count: bars.len(),
+            duplicate_lines_removed: &removed_dup,
             removed: &[],
             clock: &clock,
             bars: &bars,

@@ -95,6 +95,9 @@ def main():
                         lines.append(
                             f"{date:%Y%m%d} {m // 60:02d}{m % 60:02d}00;{op:.6f};{high:.6f};{low:.6f};{op:.6f};0\n"
                         )
+                    if date == dt.date(2019, 10, 27):
+                        dup_begin = 1140 - begin
+                        lines.extend(lines[dup_begin : dup_begin + 60])
                     f.write("".join(lines).encode())
                     date += dt.timedelta(days=1)
             text_info = zipfile.ZipInfo(f"DAT_ASCII_EURUSD_M1_{ident}.txt")

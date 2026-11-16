@@ -243,6 +243,7 @@ pub fn run(
             stage,
             input_hashes: &hashes,
             raw_bar_count: raw_count,
+            duplicate_lines_removed: &loaded.duplicate_lines_removed,
             removed: &removed,
             clock: &clock,
             bars: &bars,

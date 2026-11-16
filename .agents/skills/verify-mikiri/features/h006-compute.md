@@ -4,7 +4,7 @@
 
 ## Sub-features
 
-- Dev reads annual ZIPs through 2024 and ignores rows after 2024-10-31 before parsing. Holdout reads all 29 ZIPs and ignores rows after 2026-10-30. SPY rows use the same respective cutoffs.
+- Dev reads annual ZIPs through 2024 and ignores rows after 2024-10-31 before parsing. Holdout reads all 29 ZIPs and ignores rows after 2026-10-30. SPY rows use the same respective cutoffs. After the stage date cut and before parsing prices, byte-identical input lines that repeat an earlier line with the same timestamp are dropped and recorded; any other duplicate or out-of-order timestamp stops the run.
 - Holdout requires `--dev-match` and `--ledger`. The dev comparison must match, its embedded dev summaries must agree, all dev result files must match `SHA256SUMS`, and the envelope and ledger must bind that manifest hash. The most recent H006 dev run must bind all 29 ZIP hashes and `SPY.json`; the later dev verdict must pass A, B, C and D; a later `holdout_open` must exist; and no H006 holdout run may already exist. Missing, inconsistent, or tampered evidence stops before publication.
 - Outputs are published as a new directory atomically. An existing output directory is refused.
 
@@ -36,7 +36,7 @@ The output files and columns are:
 
 `summary.json` keys:
 
-- `stage`; `input_sha256` mapping opened names to full SHA-256; `counts` with `bars_input`, `bars_clean`, `removed_bars`, `calculation_days`, `excluded_days`; `first_calculation_day`; `excluded_days` array of `{date, reason}` (`no_bars` or `missing_boundary`).
+- `stage`; `input_sha256` mapping opened names to full SHA-256; `duplicate_lines_removed` with `count` and `timestamps` (New York wall-time strings in input order); `counts` with `bars_input`, `bars_clean`, `removed_bars`, `calculation_days`, `excluded_days`; `first_calculation_day`; `excluded_days` array of `{date, reason}` (`no_bars` or `missing_boundary`).
 - `clock_check.winter` and `.summer`: `top` array of `[minute, mean]`, `sunday_median`, `sundays`.
 - `segments` array: `segment`, `w`, `b`, `sr`, `cagr_pretax`, `cagr_aftertax`, `drawdown_pretax`, `drawdown_aftertax`, `max_leverage`, `max_leg_notional_to_equity`; `psr`, `psr_threshold`; `gates` with `A`, `B`, `C`, `D`, `H` (null in dev).
 - `random_control`: `actual_sr`, `round_sr` array, `excluded_days` array, `percentile`, `gate_d`. A null SR or percentile means the control was not computable.
