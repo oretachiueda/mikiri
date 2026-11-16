@@ -11,14 +11,22 @@ start minutes at once, with the random.parquet column layout.
 Unit 5: the prereg section 8 report tables per segment (tax, cost x target,
 break-even, tails, bootstrap drawdown, ablations, same bar, flip, yearly),
 shaped like the Rust summary.json reports structure.
+Unit 6: the CLI pipeline that computes everything from the zips and SPY and
+compares days/accounts/random/removed_bars parquet and every summary.json key
+against the Rust run, writing a verdict.json envelope (match, capped
+differences, summaries, results hash); holdout refuses without a matching dev
+envelope, passing dev ledger verdict, equal input hashes, holdout_open and a
+fresh holdout.
 """
 
+import argparse
 import hashlib
 import io
 import itertools
 import json
 import math
 import statistics
+import sys
 import warnings
 import zipfile
 from dataclasses import dataclass
@@ -28,8 +36,10 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from h001 import psr
+from h001 import checked_run_directory, psr, write_verdict
 from h005 import benchmark
 
 NY = ZoneInfo("America/New_York")
@@ -395,6 +405,34 @@ def computation_days(bars: Bars) -> tuple[list[Day], dict]:
         "excluded_weekdays": weekdays - len(days),
     }
     return days, stats
+
+
+INPUT_START = date(2007, 1, 1)
+
+
+def excluded_days(raw: np.ndarray, days: list[Day]) -> list[dict]:
+    """Weekday dates from the input start to the last bar that are not days.
+
+    A weekday with no raw bars at all is "no_bars"; one whose cleaned bars
+    still fail a boundary price is "missing_boundary".
+    """
+    raw_dates = {int(value) for value in np.unique(raw // 1_000_000)}
+    last = _calendar_date(max(raw_dates))
+    calculation = {day.date for day in days}
+    result: list[dict] = []
+    observed = INPUT_START
+    one = timedelta(days=1)
+    while observed <= last:
+        if observed.weekday() < 5 and observed not in calculation:
+            ymd = observed.year * 10000 + observed.month * 100 + observed.day
+            result.append(
+                {
+                    "date": observed.isoformat(),
+                    "reason": "no_bars" if ymd not in raw_dates else "missing_boundary",
+                }
+            )
+        observed += one
+    return result
 
 
 W_EU = 0.5777354984728738
@@ -1041,7 +1079,7 @@ def random_control(
         "round_sr": [
             float(value) if np.isfinite(value) else None for value in round_sr
         ],
-        "excluded_days": (count - counts).tolist(),
+        "excluded_days": [int(value) for value in count - counts],
         "percentile": percentile,
         "gate_d": bool(gate_d),
     }
@@ -1430,3 +1468,573 @@ def segment_reports(
         name: segment_report(frame, days, spy_rows, name, tax_rate)
         for name in STAGE_SEGMENTS[stage]
     }
+
+
+# Unit 6: the CLI pipeline, the comparison with the Rust run, and the verdict.
+
+RESULT_FILES = (
+    "accounts.parquet",
+    "days.parquet",
+    "random.parquet",
+    "removed_bars.parquet",
+    "summary.json",
+)
+MISMATCH_CAP = 50
+PLATEAU_IN_SAMPLE = {
+    "A": {"S0": 1.369, "S1": 1.350, "S2": 1.043, "S3": 1.452},
+    "B": {"S0": 1.245, "S1": 1.353, "S2": 1.236, "S3": 1.484},
+    "C": {"S0": 1.453, "S1": 1.510, "S2": 1.207, "S3": 1.584},
+}
+HOLM_NOTE = "B equals the first Holm step for one setting"
+_PLAIN_TABLES = ("breakeven", "tails", "bootstrap", "same_bar", "flip", "yearly")
+_ABLATION_NAMES = ("eu_only", "us_only", "s0")
+_ABSOLUTE_LABELS = ("psr", "percentile")
+
+
+def report_combinations(stage: str) -> list[dict]:
+    """Every executed report table and its parameters, in output order."""
+    if stage not in STAGE_SEGMENTS:
+        raise ValueError("invalid stage")
+    rows: list[dict] = []
+    for segment in STAGE_SEGMENTS[stage]:
+        rows.extend(
+            {"segment": segment, "table": "tax", "rate": rate} for rate in TAX_RATES
+        )
+        rows.extend(
+            {"segment": segment, "table": "cost_target", "pip": pip, "target": target}
+            for pip in COST_PIPS
+            for target in COST_TARGETS
+        )
+        rows.extend(
+            {"segment": segment, "table": "ablation", "name": name}
+            for name in _ABLATION_NAMES
+        )
+        rows.extend({"segment": segment, "table": name} for name in _PLAIN_TABLES)
+    return rows
+
+
+def clock_summary(clock: dict) -> dict:
+    """The summary.json clock_check block from a time_checks report."""
+    return {
+        season: {
+            "top": [
+                [int(minute), float(mean)]
+                for minute, mean in clock["top_minutes"][season]
+            ],
+            "sunday_median": float(clock["sunday_median"][season]),
+            "sundays": int(clock["sundays"][season]),
+        }
+        for season in ("winter", "summer")
+    }
+
+
+def python_summary(
+    stage: str,
+    bars: Bars,
+    cleaned: Bars,
+    removed: list[str],
+    clock: dict,
+    excluded: list[dict],
+    days: list[Day],
+    spy_digest: str,
+    stats: dict[str, dict],
+    gates: dict[str, bool | None],
+    control: dict,
+    reports: dict[str, dict],
+) -> dict:
+    """The Python summary mirroring the Rust summary.json key for key."""
+    fields = (
+        "w",
+        "b",
+        "sr",
+        "cagr_pretax",
+        "cagr_aftertax",
+        "drawdown_pretax",
+        "drawdown_aftertax",
+        "max_leverage",
+        "max_leg_notional_to_equity",
+    )
+    return {
+        "stage": stage,
+        "input_sha256": {**bars.sha256, "SPY.json": spy_digest},
+        "counts": {
+            "bars_input": int(bars.parsed),
+            "bars_clean": int(cleaned.stamp.size),
+            "removed_bars": len(removed),
+            "calculation_days": len(days),
+            "excluded_days": len(excluded),
+        },
+        "first_calculation_day": days[0].date.isoformat(),
+        "excluded_days": excluded,
+        "clock_check": clock_summary(clock),
+        "gates": {
+            "A": gates["A"],
+            "B": gates["B"],
+            "C": gates["C"],
+            "D": control["gate_d"],
+            "H": gates["H"],
+        },
+        "psr": stats["dev"]["psr"],
+        "psr_threshold": PSR_THRESHOLD,
+        "random_control": control,
+        "reports": reports,
+        "segments": [
+            {"segment": name, **{field: stats[name][field] for field in fields}}
+            for name in STAGE_SEGMENTS[stage]
+        ],
+        "report_combinations": report_combinations(stage),
+        "plateau_in_sample": PLATEAU_IN_SAMPLE,
+        "holm": HOLM_NOTE,
+    }
+
+
+def compare_tree(
+    expected: object,
+    actual: object,
+    label: str = "summary",
+    differences: list[str] | None = None,
+) -> list[str]:
+    """Depth-first summary comparison: structure, booleans, strings and dates
+    exact; integers exact; numbers |a-b| <= 1e-10 * max(1, |a|, |b|); PSR and
+    percentile absolute 1e-9; null matches null."""
+    if differences is None:
+        differences = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict) or expected.keys() != actual.keys():
+            differences.append(f"{label}: fields differ")
+            return differences
+        for key, value in expected.items():
+            compare_tree(value, actual[key], f"{label}.{key}", differences)
+    elif isinstance(expected, list):
+        if not isinstance(actual, list) or len(expected) != len(actual):
+            differences.append(f"{label}: length differs")
+            return differences
+        for index, (left, right) in enumerate(zip(expected, actual, strict=True)):
+            compare_tree(left, right, f"{label}[{index}]", differences)
+    elif isinstance(expected, bool) or isinstance(actual, bool):
+        if not isinstance(expected, bool) or not isinstance(actual, bool):
+            differences.append(f"{label}: type differs")
+        elif expected != actual:
+            differences.append(f"{label}: mismatch")
+    elif expected is None or actual is None:
+        if expected is not None or actual is not None:
+            differences.append(f"{label}: null mismatch")
+    elif isinstance(expected, str) or isinstance(actual, str):
+        if not isinstance(expected, str) or not isinstance(actual, str):
+            differences.append(f"{label}: type differs")
+        elif expected != actual:
+            differences.append(f"{label}: mismatch")
+    elif isinstance(expected, int) and isinstance(actual, int):
+        if expected != actual:
+            differences.append(f"{label}: mismatch")
+    elif isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        if isinstance(expected, int) and isinstance(actual, int):
+            if expected != actual:
+                differences.append(f"{label}: mismatch")
+            return differences
+        left, right = float(expected), float(actual)
+        name = label.rsplit(".", 1)[-1]
+        tolerance = (
+            1e-9
+            if name in _ABSOLUTE_LABELS
+            else 1e-10 * max(1.0, abs(left), abs(right))
+        )
+        if not math.isfinite(right) or abs(left - right) > tolerance:
+            differences.append(f"{label}: {expected} vs {actual}")
+    else:
+        differences.append(f"{label}: type differs")
+    return differences
+
+
+def compare_table(expected: pa.Table, path: Path, label: str) -> list[str]:
+    """Column-by-column comparison of a built table with the Rust parquet.
+
+    Dates, times, booleans, integers and strings must match exactly with
+    null matching null; float columns use 1e-10 * max(1, |a|, |b|).
+    """
+    actual = pq.read_table(path)
+    names = [field.name for field in expected.schema]
+    if names != actual.schema.names:
+        return [f"{label}: columns differ"]
+    differences: list[str] = []
+    for name in names:
+        mine = _single_array(expected.column(name))
+        theirs = _single_array(actual.column(name))
+        if pa.types.is_floating(mine.type):
+            left = np.asarray(mine.to_numpy(zero_copy_only=False), dtype="float64")
+            right = np.asarray(theirs.to_numpy(zero_copy_only=False), dtype="float64")
+            left_null = np.isnan(left)
+            right_null = np.isnan(right)
+            scale = np.maximum(1.0, np.maximum(np.abs(left), np.abs(right)))
+            bad = (left_null != right_null) | (
+                ~left_null & ~right_null & (np.abs(left - right) > 1e-10 * scale)
+            )
+            if bad.any():
+                index = int(np.flatnonzero(bad)[0])
+                differences.append(
+                    f"{label}.{name}[{index}]: {left[index]} vs {right[index]}"
+                )
+        elif not mine.equals(theirs):
+            index = _first_value_difference(mine, theirs)
+            differences.append(
+                f"{label}.{name}[{index}]: {mine[index].as_py()} vs {theirs[index].as_py()}"
+            )
+    return differences
+
+
+def _single_array(column: pa.ChunkedArray) -> pa.Array:
+    combined = column.combine_chunks()
+    if isinstance(combined, pa.ChunkedArray):
+        return (
+            combined.chunk(0) if combined.num_chunks else pa.array([], type=column.type)
+        )
+    return combined
+
+
+def _first_value_difference(mine: pa.Array, theirs: pa.Array) -> int:
+    """The first position where two same-typed arrays differ; -1 if unclear."""
+    left = mine.to_numpy(zero_copy_only=False)
+    right = theirs.to_numpy(zero_copy_only=False)
+    if left.dtype == object:
+        for index, (a, b) in enumerate(zip(left, right, strict=True)):
+            if a != b:
+                return index
+        return -1
+    differs = left != right
+    if left.dtype == np.float64 and right.dtype == np.float64:
+        differs &= ~(np.isnan(left) & np.isnan(right))
+    positions = np.flatnonzero(differs)
+    return int(positions[0]) if positions.size else -1
+
+
+_LEG_TYPES = (
+    ("entry_price", pa.float64()),
+    ("entry_fallback", pa.bool_()),
+    ("boundary_exit_price", pa.float64()),
+    ("sigma", pa.float64()),
+    ("stop_initial", pa.float64()),
+    ("flag_min", pa.int64()),
+    ("stopped", pa.bool_()),
+    ("exit_min", pa.int64()),
+    ("exit_price", pa.float64()),
+    ("r_nostop", pa.float64()),
+    ("r", pa.float64()),
+    ("a", pa.float64()),
+    ("c", pa.float64()),
+)
+_DAYS_SCHEMA = pa.schema(
+    [
+        ("date", pa.string()),
+        ("us_dst", pa.bool_()),
+        ("eu_entry_min", pa.int64()),
+        ("us_entry_min", pa.int64()),
+        ("us_exit_min_boundary", pa.int64()),
+        *(
+            (f"{leg}_{field}", type_)
+            for leg in ("eu", "us")
+            for field, type_ in _LEG_TYPES
+        ),
+        ("u", pa.float64()),
+        ("sigma_hat", pa.float64()),
+        ("leverage", pa.float64()),
+        ("R", pa.float64()),
+    ]
+)
+_ACCOUNT_SCHEMA = pa.schema(
+    [
+        ("segment", pa.string()),
+        ("date", pa.string()),
+        ("equity_start", pa.float64()),
+        ("R", pa.float64()),
+        ("tax_paid", pa.float64()),
+        ("equity_end", pa.float64()),
+        ("equity_pretax", pa.float64()),
+    ]
+)
+_RANDOM_SCHEMA = pa.schema(
+    [
+        ("round", pa.int64()),
+        ("day_index", pa.int64()),
+        ("leg", pa.string()),
+        ("K", pa.int64()),
+        ("start_min", pa.int64()),
+        ("exit_min", pa.int64()),
+        ("stopped", pa.bool_()),
+        ("a", pa.float64()),
+        ("c", pa.float64()),
+        ("valid", pa.bool_()),
+    ]
+)
+
+
+def days_table(frame: pd.DataFrame) -> pa.Table:
+    """The days.parquet table built from a daily_legs frame."""
+    columns = {}
+    for field in _DAYS_SCHEMA:
+        values = frame[field.name]
+        if field.type == pa.string():
+            array = pa.array([value.isoformat() for value in values], type=field.type)
+        elif field.type == pa.bool_():
+            array = pa.array([bool(value) for value in values], type=field.type)
+        elif field.type == pa.int64():
+            array = pa.array(
+                [None if pd.isna(value) else int(value) for value in values],
+                type=field.type,
+            )
+        else:
+            array = pa.array(
+                [None if pd.isna(value) else float(value) for value in values],
+                type=field.type,
+            )
+        columns[field.name] = array
+    return pa.table(columns, schema=_DAYS_SCHEMA)
+
+
+def accounts_table(accounts: pd.DataFrame) -> pa.Table:
+    """The accounts.parquet table built from a run_segments frame."""
+    return pa.table(
+        {
+            "segment": pa.array([str(value) for value in accounts["segment"]]),
+            "date": pa.array([value.isoformat() for value in accounts["date"]]),
+            **{
+                name: pa.array([float(value) for value in accounts[name]])
+                for name in _ACCOUNT_SCHEMA.names[2:]
+            },
+        },
+        schema=_ACCOUNT_SCHEMA,
+    )
+
+
+def _nullable(values: pd.Series, dtype: str, type: pa.DataType) -> pa.Array:
+    """A pandas nullable column as a pyarrow array with nulls preserved."""
+    mask = values.notna().to_numpy()
+    plain = values.to_numpy(dtype=dtype, na_value=False if dtype == "bool" else 0)
+    return pa.array(plain, mask=~mask, type=type)
+
+
+def random_table(result: pd.DataFrame) -> pa.Table:
+    """The random.parquet table built from a random_control frame."""
+    return pa.table(
+        {
+            "round": pa.array(result["round"].to_numpy()),
+            "day_index": pa.array(result["day_index"].to_numpy()),
+            "leg": pa.array(result["leg"].to_numpy(), type=pa.string()),
+            "K": pa.array(result["K"].to_numpy()),
+            "start_min": _nullable(result["start_min"], "int64", pa.int64()),
+            "exit_min": _nullable(result["exit_min"], "int64", pa.int64()),
+            "stopped": _nullable(result["stopped"], "bool", pa.bool_()),
+            "a": _nullable(result["a"], "float64", pa.float64()),
+            "c": _nullable(result["c"], "float64", pa.float64()),
+            "valid": pa.array(result["valid"].to_numpy()),
+        },
+        schema=_RANDOM_SCHEMA,
+    )
+
+
+def iso_timestamp(text: str) -> str:
+    """A cleaned-bar stamp "YYYYMMDD HHMMSS" as "YYYY-MM-DDTHH:MM:SS"."""
+    stamp = text.replace(" ", "T")
+    return (
+        f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
+        f"T{stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}"
+    )
+
+
+def removed_table(removed: list[str]) -> pa.Table:
+    """The removed_bars.parquet table built from clean_outliers stamps."""
+    return pa.table(
+        {
+            "timestamp": pa.array(
+                [iso_timestamp(value) for value in removed], type=pa.string()
+            )
+        }
+    )
+
+
+def verify_manifest(directory: Path) -> str:
+    """Check SHA256SUMS against the result files; return its own SHA-256."""
+    path = directory / "SHA256SUMS"
+    lines = path.read_text().splitlines()
+    if lines != [f"{digest(directory / name)}  {name}" for name in RESULT_FILES]:
+        raise ValueError("invalid or mismatching results manifest")
+    return digest(path)
+
+
+def _input_hashes(histdata_dir: Path, spy: Path) -> dict[str, str]:
+    """SHA-256 map of the dev-run input files: the dev zips and SPY.json."""
+    hashes = {name: digest(histdata_dir / name) for name in STAGE_ZIPS["dev"]}
+    hashes["SPY.json"] = digest(spy)
+    return hashes
+
+
+def require_holdout(
+    dev_match: Path | None,
+    ledger: Path | None,
+    histdata_dir: Path,
+    spy: Path,
+) -> None:
+    """Refuse the holdout stage without an authorized, matching dev record."""
+    if dev_match is None or ledger is None:
+        raise ValueError("holdout requires --dev-match and --ledger")
+    envelope = json.loads(dev_match.read_text())
+    if not isinstance(envelope, dict) or envelope.get("match") is not True:
+        raise ValueError("dev comparison must match")
+    results_digest = verify_manifest(dev_match.parent)
+    if envelope.get("results_sha256") != results_digest:
+        raise ValueError("dev envelope results hash mismatch")
+    actual = json.loads((dev_match.parent / "summary.json").read_text())
+    if any(envelope.get(key) != actual for key in ("rust_summary", "python_summary")):
+        raise ValueError("dev envelope summary mismatch")
+    records = [
+        json.loads(line) for line in ledger.read_text().splitlines() if line.strip()
+    ]
+    if any(not isinstance(row, dict) for row in records):
+        raise ValueError("invalid ledger record")
+    records = [row for row in records if row.get("hypothesis") == "H006"]
+    numbered = list(enumerate(records))
+    if any(
+        row.get("kind") == "run" and row.get("stage") == "holdout"
+        for _, row in numbered
+    ):
+        raise ValueError("H006 holdout already used")
+    dev_runs = [
+        (index, row)
+        for index, row in numbered
+        if row.get("kind") == "run" and row.get("stage") == "dev"
+    ]
+    if not dev_runs:
+        raise ValueError("missing H006 dev run")
+    run_index, dev_run = dev_runs[-1]
+    if dev_run.get("data_sha256") != _input_hashes(histdata_dir, spy):
+        raise ValueError("H006 dev run input hashes mismatch")
+    if dev_run.get("results_sha256") != results_digest:
+        raise ValueError("H006 dev run results hash mismatch")
+    dev_verdicts = [
+        (index, row)
+        for index, row in numbered
+        if index > run_index
+        and row.get("kind") == "verdict"
+        and row.get("stage") == "dev"
+    ]
+    if not dev_verdicts:
+        raise ValueError("missing H006 dev verdict")
+    verdict_index, dev_verdict = dev_verdicts[-1]
+    gates = dev_verdict.get("gates")
+    if (
+        dev_verdict.get("result") != "pass"
+        or dev_verdict.get("results_sha256") != results_digest
+        or not isinstance(gates, dict)
+        or any(gates.get(gate) is not True for gate in ("A", "B", "C", "D"))
+    ):
+        raise ValueError("H006 dev ledger gates or results mismatch")
+    if not any(
+        index > verdict_index
+        and row.get("kind") == "holdout_open"
+        and row.get("stage") == "holdout"
+        for index, row in numbered
+    ):
+        raise ValueError("missing H006 holdout_open")
+
+
+def run(
+    run_directory: Path,
+    stage: str,
+    histdata_dir: Path,
+    spy: Path,
+    dev_match: Path | None = None,
+    ledger: Path | None = None,
+) -> tuple[Path, str, bool]:
+    """Compute everything independently and compare with the Rust run.
+
+    Returns the verdict path, its hash and whether every key matched. A
+    mismatch still writes a match=false verdict; the caller exits non-zero.
+    """
+    if stage == "holdout":
+        require_holdout(dev_match, ledger, histdata_dir, spy)
+    directory = checked_run_directory(run_directory)
+    results_digest = verify_manifest(directory)
+    bars = read_histdata(histdata_dir, stage)
+    validate_clock(bars.stamp)
+    cleaned, removed = clean_outliers(bars)
+    clock = time_checks(cleaned)
+    print("clock_check", json.dumps(clock_summary(clock)), flush=True)
+    days, _ = computation_days(cleaned)
+    excluded = excluded_days(bars.stamp, days)
+    spy_rows = read_spy(spy, stage)
+    frame = daily_legs(days)
+    accounts, stats, gates = run_segments(frame, spy_rows, stage)
+    control_table, control = random_control(frame, days)
+    if control_table is None:
+        raise ValueError("random control table missing")
+    reports = segment_reports(frame, days, spy_rows, stage)
+    summary = python_summary(
+        stage,
+        bars,
+        cleaned,
+        removed,
+        clock,
+        excluded,
+        days,
+        digest(spy),
+        stats,
+        gates,
+        control,
+        reports,
+    )
+    rust_summary = json.loads((directory / "summary.json").read_text())
+    differences = compare_tree(summary, rust_summary)
+    differences += compare_table(days_table(frame), directory / "days.parquet", "days")
+    differences += compare_table(
+        accounts_table(accounts), directory / "accounts.parquet", "accounts"
+    )
+    differences += compare_table(
+        random_table(control_table), directory / "random.parquet", "random"
+    )
+    differences += compare_table(
+        removed_table(removed), directory / "removed_bars.parquet", "removed_bars"
+    )
+    verdict = {
+        "python_summary": summary,
+        "rust_summary": rust_summary,
+        "match": not differences,
+        "mismatches": differences[:MISMATCH_CAP],
+        "results_sha256": results_digest,
+    }
+    path, verdict_digest = write_verdict(directory, verdict)
+    return path, verdict_digest, not differences
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run", required=True, type=Path)
+    parser.add_argument("--stage", required=True, choices=("dev", "holdout"))
+    parser.add_argument("--histdata-dir", required=True, type=Path)
+    parser.add_argument("--spy", required=True, type=Path)
+    parser.add_argument("--dev-match", type=Path)
+    parser.add_argument("--ledger", type=Path)
+    args = parser.parse_args()
+    try:
+        path, verdict_digest, matched = run(
+            args.run,
+            args.stage,
+            args.histdata_dir,
+            args.spy,
+            args.dev_match,
+            args.ledger,
+        )
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        ArithmeticError,
+        AttributeError,
+    ) as error:
+        print(f"H006 input or computation failed: {error}", file=sys.stderr)
+        return 1
+    print(f"{path} sha256={verdict_digest} match={str(matched).lower()}")
+    return 0 if matched else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

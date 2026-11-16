@@ -3,12 +3,15 @@ import io
 import json
 import math
 import statistics
+import sys
 import zipfile
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 import h006 as h
@@ -1443,3 +1446,416 @@ def test_segment_report_shape_and_self_checks():
     assert report["flip"]["reversed_sr"] is not None
     assert set(report["yearly"]["values"]) == {"years", "median_sr", "winter", "summer"}
     assert report["yearly"]["values"]["years"][-1]["year"] == 2024
+
+
+# Unit 6: the CLI pipeline, the Rust comparison, and the holdout refusals.
+
+
+def bar_stamp(ymd, minute):
+    return ymd * 1_000_000 + (minute // 60) * 10_000 + (minute % 60) * 100
+
+
+def test_excluded_days_reasons_and_range():
+    eu_min, us_exit = h.ny_minutes(date(2007, 1, 2))
+    raw = (
+        [bar_stamp(20070102, minute) for minute in (eu_min, 480, us_exit)]
+        + [bar_stamp(20070104, 600)]
+        + [bar_stamp(20070105, minute) for minute in (eu_min, 480, us_exit)]
+    )
+    bars = h.Bars(
+        stamp=np.array(raw, dtype=np.int64),
+        open=np.ones(len(raw)),
+        high=np.ones(len(raw)),
+        low=np.ones(len(raw)),
+        close=np.ones(len(raw)),
+        sha256={},
+        parsed=len(raw),
+    )
+    days, _stats = h.computation_days(bars)
+    assert [day.date for day in days] == [date(2007, 1, 2), date(2007, 1, 5)]
+    assert h.excluded_days(bars.stamp, days) == [
+        {"date": "2007-01-01", "reason": "no_bars"},
+        {"date": "2007-01-03", "reason": "no_bars"},
+        {"date": "2007-01-04", "reason": "missing_boundary"},
+    ]
+
+
+def test_compare_tree_tolerance_rules():
+    assert h.compare_tree({"psr": 0.5}, {"psr": 0.5 + 9e-10}) == []
+    assert h.compare_tree({"psr": 0.5}, {"psr": 0.5 + 2e-9}) != []
+    assert h.compare_tree({"percentile": 1.0}, {"percentile": 1.0 - 9e-10}) == []
+    assert h.compare_tree({"w": 1.0}, {"w": 1.0 + 5e-11}) == []
+    assert h.compare_tree({"w": 1.0}, {"w": 1.0 + 2e-10}) != []
+    assert h.compare_tree({"n": 7}, {"n": 7}) == []
+    assert h.compare_tree({"n": 7}, {"n": 8}) == ["summary.n: mismatch"]
+    assert h.compare_tree({"x": None}, {"x": None}) == []
+    assert h.compare_tree({"x": None}, {"x": 1.0}) == ["summary.x: null mismatch"]
+    assert h.compare_tree({"x": 1.0}, {"x": None}) == ["summary.x: null mismatch"]
+    assert h.compare_tree({"g": True}, {"g": 1}) == ["summary.g: type differs"]
+    assert h.compare_tree({"a": [1, 2]}, {"a": [1]}) == ["summary.a: length differs"]
+    assert h.compare_tree({"a": 1}, {"b": 1}) == ["summary: fields differ"]
+    assert h.compare_tree("dev", "dev") == []
+    assert h.compare_tree("dev", "holdout") == ["summary: mismatch"]
+
+
+def test_compare_table_matches_and_reports(tmp_path):
+    table = pa.table(
+        {
+            "n": pa.array([1, 2, 3], pa.int64()),
+            "x": pa.array([1.0, None, 3.0]),
+            "s": pa.array(["a", "b", "c"]),
+        }
+    )
+    path = tmp_path / "out.parquet"
+    pq.write_table(table, path)
+    assert h.compare_table(table, path, "out") == []
+    other = pa.table(
+        {
+            "n": pa.array([1, 2, 4], pa.int64()),
+            "x": pa.array([1.0, None, 3.0 + 2e-9]),
+            "s": pa.array(["a", "c", "c"]),
+        }
+    )
+    diffs = h.compare_table(other, path, "out")
+    assert len(diffs) == 3
+    assert diffs[0] == "out.n[2]: 4 vs 3"
+    assert diffs[1].startswith("out.x[2]: 3.000000002 vs 3.0")
+    assert diffs[2] == "out.s[1]: c vs b"
+    swapped = pa.table(
+        {
+            "x": pa.array([1.0, None, 3.0]),
+            "n": pa.array([1, 2, 3], pa.int64()),
+            "s": pa.array(["a", "b", "c"]),
+        }
+    )
+    assert h.compare_table(swapped, path, "out") == ["out: columns differ"]
+
+
+def test_verify_manifest_checks_files(tmp_path):
+    digests = {}
+    for name in h.RESULT_FILES:
+        (tmp_path / name).write_bytes(name.encode())
+        digests[name] = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+    manifest = "".join(f"{digests[name]}  {name}\n" for name in h.RESULT_FILES)
+    (tmp_path / "SHA256SUMS").write_text(manifest)
+    assert h.verify_manifest(tmp_path) == hashlib.sha256(manifest.encode()).hexdigest()
+    (tmp_path / "removed_bars.parquet").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="manifest"):
+        h.verify_manifest(tmp_path)
+
+
+def test_iso_timestamp_format():
+    assert h.iso_timestamp("20070102 120000") == "2007-01-02T12:00:00"
+    assert h.iso_timestamp("20120203 061509") == "2012-02-03T06:15:09"
+
+
+def test_report_combinations_layout_and_count():
+    dev = h.report_combinations("dev")
+    assert len(dev) == 38
+    assert dev[0] == {"segment": "dev", "table": "tax", "rate": 0.0}
+    assert dev[2] == {
+        "segment": "dev",
+        "table": "cost_target",
+        "pip": 0.0,
+        "target": 0.30,
+    }
+    assert dev[10] == {"segment": "dev", "table": "ablation", "name": "eu_only"}
+    assert dev[13] == {"segment": "dev", "table": "breakeven"}
+    assert dev[19] == {"segment": "recent", "table": "tax", "rate": 0.0}
+    holdout = h.report_combinations("holdout")
+    assert len(holdout) == 57
+    assert holdout[-1] == {"segment": "holdout", "table": "yearly"}
+    with pytest.raises(ValueError):
+        h.report_combinations("nope")
+
+
+def test_clock_summary_shape():
+    clock = {
+        "peak_minute": {"winter": 510, "summer": 510},
+        "top_minutes": {
+            "winter": [(510, 0.5), (600, 0.25)],
+            "summer": [(510, 0.4), (600, 0.2)],
+        },
+        "sunday_median": {"winter": 1020.0, "summer": 1020.0},
+        "sundays": {"winter": 152, "summer": 159},
+    }
+    summary = h.clock_summary(clock)
+    assert summary == {
+        "winter": {
+            "top": [[510, 0.5], [600, 0.25]],
+            "sunday_median": 1020.0,
+            "sundays": 152,
+        },
+        "summer": {
+            "top": [[510, 0.4], [600, 0.2]],
+            "sunday_median": 1020.0,
+            "sundays": 159,
+        },
+    }
+
+
+def test_days_table_roundtrip_and_nulls(tmp_path):
+    days = synth_days(65)
+    frame = h.daily_legs(days)
+    table = h.days_table(frame)
+    assert table.column("R").null_count == 60
+    assert table.schema.field("eu_flag_min").type == pa.int64()
+    path = tmp_path / "days.parquet"
+    pq.write_table(table, path)
+    assert h.compare_table(table, path, "days") == []
+    frame.loc[64, "R"] = float(frame.loc[64, "R"]) + 2e-9
+    diffs = h.compare_table(h.days_table(frame), path, "days")
+    assert len(diffs) == 1
+    assert diffs[0].startswith("days.R[64]: ")
+
+
+def test_accounts_table_roundtrip(tmp_path):
+    frame = pd.concat(
+        [
+            alternating(date(2007, 7, 2), 100, 0.01, -0.004),
+            alternating(date(2019, 11, 1), 40, 0.008, -0.003),
+        ],
+        ignore_index=True,
+    )
+    spy = flat_spy(date(2007, 7, 2), date(2019, 11, 1), date(2024, 10, 31))
+    accounts, _, _ = h.run_segments(frame, spy, "dev")
+    table = h.accounts_table(accounts)
+    assert table.schema.names == list(h.ACCOUNT_COLUMNS)
+    assert table.column("segment").to_pylist()[:2] == ["dev", "dev"]
+    path = tmp_path / "accounts.parquet"
+    pq.write_table(table, path)
+    assert h.compare_table(table, path, "accounts") == []
+
+
+def test_random_table_roundtrip_and_layout(tmp_path):
+    dates = weekday_dates(date(2024, 1, 8), 8)
+    days = [dense_day(value)[0] for value in dates]
+    frame = control_frame(days, [0.001 * ((i % 5) - 2) for i in range(8)])
+    result, _ = h.random_control(frame, days, rounds=3)
+    assert result is not None
+    table = h.random_table(result)
+    assert table.schema.names == list(h.RANDOM_COLUMNS)
+    assert table.num_rows == 3 * 8 * 2
+    assert table.column("round").to_pylist()[:4] == [0, 0, 0, 0]
+    assert table.column("day_index").to_pylist()[:4] == [0, 0, 1, 1]
+    assert table.column("leg").to_pylist()[:2] == ["eu", "us"]
+    path = tmp_path / "random.parquet"
+    pq.write_table(table, path)
+    assert h.compare_table(table, path, "random") == []
+
+
+def test_main_exit_codes(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "h006.py",
+            "--run",
+            str(tmp_path),
+            "--stage",
+            "dev",
+            "--histdata-dir",
+            str(tmp_path),
+            "--spy",
+            str(tmp_path / "SPY.json"),
+        ],
+    )
+    monkeypatch.setattr(
+        h, "run", lambda *args, **kwargs: (tmp_path / "verdict.json", "ab" * 32, True)
+    )
+    assert h.main() == 0
+    monkeypatch.setattr(
+        h, "run", lambda *args, **kwargs: (tmp_path / "verdict.json", "ab" * 32, False)
+    )
+    assert h.main() == 1
+    monkeypatch.setattr(
+        h, "run", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("boom"))
+    )
+    assert h.main() == 1
+
+
+def dev_run_dir(tmp_path, summary, *, envelope_sha=True):
+    """A dev run directory with stub results, a valid manifest and envelope."""
+    dev = tmp_path / "dev"
+    dev.mkdir(exist_ok=True)
+    for name in h.RESULT_FILES:
+        (dev / name).write_bytes(b"stub")
+    (dev / "summary.json").write_text(json.dumps(summary))
+    digests = {
+        name: hashlib.sha256((dev / name).read_bytes()).hexdigest()
+        for name in h.RESULT_FILES
+    }
+    manifest = "".join(f"{digests[name]}  {name}\n" for name in h.RESULT_FILES)
+    (dev / "SHA256SUMS").write_text(manifest)
+    manifest_hash = hashlib.sha256(manifest.encode()).hexdigest()
+    envelope = {
+        "match": True,
+        "rust_summary": summary,
+        "python_summary": summary,
+        "results_sha256": manifest_hash if envelope_sha else "0" * 64,
+    }
+    (dev / "verdict.json").write_text(json.dumps(envelope))
+    return dev / "verdict.json", manifest_hash
+
+
+def write_ledger(tmp_path, rows):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return ledger
+
+
+def authorized_rows(manifest_hash, hashes):
+    return [
+        {
+            "kind": "run",
+            "hypothesis": "H006",
+            "stage": "dev",
+            "data_sha256": hashes,
+            "results_sha256": manifest_hash,
+        },
+        {
+            "kind": "verdict",
+            "hypothesis": "H006",
+            "stage": "dev",
+            "result": "pass",
+            "gates": {"A": True, "B": True, "C": True, "D": True},
+            "results_sha256": manifest_hash,
+        },
+        {
+            "kind": "holdout_open",
+            "hypothesis": "H006",
+            "stage": "holdout",
+            "reason": "test",
+        },
+    ]
+
+
+def holdout_inputs(tmp_path, histdata):
+    spy = tmp_path / "SPY.json"
+    spy.write_text("[]")
+    return histdata, spy, h._input_hashes(histdata, spy)
+
+
+def test_holdout_accepts_authorized_record(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    ledger = write_ledger(tmp_path, authorized_rows(manifest_hash, hashes))
+    h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_missing_arguments(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    ledger = write_ledger(tmp_path, authorized_rows(manifest_hash, hashes))
+    with pytest.raises(ValueError, match="dev-match"):
+        h.require_holdout(None, ledger, histdata, spy)
+    with pytest.raises(ValueError, match="dev-match"):
+        h.require_holdout(env_path, None, histdata, spy)
+
+
+def test_holdout_refuses_unmatched_envelope(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    ledger = write_ledger(tmp_path, authorized_rows(manifest_hash, hashes))
+    envelope = json.loads(env_path.read_text())
+    for value in (False, None):
+        envelope["match"] = value
+        env_path.write_text(json.dumps(envelope))
+        with pytest.raises(ValueError, match="must match"):
+            h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_envelope_results_hash(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(
+        tmp_path, {"stage": "dev"}, envelope_sha=False
+    )
+    ledger = write_ledger(tmp_path, authorized_rows(manifest_hash, hashes))
+    with pytest.raises(ValueError, match="results hash"):
+        h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_summary_mismatch(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    ledger = write_ledger(tmp_path, authorized_rows(manifest_hash, hashes))
+    for key in ("rust_summary", "python_summary"):
+        envelope = json.loads(env_path.read_text())
+        envelope[key] = {"stage": "dev", "extra": 1}
+        env_path.write_text(json.dumps(envelope))
+        with pytest.raises(ValueError, match="summary mismatch"):
+            h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_missing_dev_run(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    ledger = write_ledger(tmp_path, authorized_rows(manifest_hash, hashes)[1:])
+    with pytest.raises(ValueError, match="missing H006 dev run"):
+        h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_dev_run_hashes(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    rows = authorized_rows("0" * 64, dict(hashes, **{"SPY.json": "0" * 64}))
+    env_path, _ = dev_run_dir(tmp_path, {"stage": "dev"})
+    ledger = write_ledger(tmp_path, rows)
+    with pytest.raises(ValueError, match="input hashes"):
+        h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_dev_run_results_hash(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    rows = authorized_rows("0" * 64, hashes)
+    env_path, _ = dev_run_dir(tmp_path, {"stage": "dev"})
+    ledger = write_ledger(tmp_path, rows)
+    with pytest.raises(ValueError, match="results hash"):
+        h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_dev_verdict(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    rows = authorized_rows(manifest_hash, hashes)
+    ledger = write_ledger(tmp_path, [rows[0], rows[2]])
+    with pytest.raises(ValueError, match="missing H006 dev verdict"):
+        h.require_holdout(env_path, ledger, histdata, spy)
+    for mutate in (
+        {"result": "fail"},
+        {"gates": {"A": True, "B": False, "C": True, "D": True}},
+        {"results_sha256": "0" * 64},
+    ):
+        rows = authorized_rows(manifest_hash, hashes)
+        rows[1] = {**rows[1], **mutate}
+        ledger = write_ledger(tmp_path, rows)
+        with pytest.raises(ValueError, match="gates or results"):
+            h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_missing_holdout_open(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    rows = authorized_rows(manifest_hash, hashes)
+    ledger = write_ledger(tmp_path, rows[:2])
+    with pytest.raises(ValueError, match="holdout_open"):
+        h.require_holdout(env_path, ledger, histdata, spy)
+    rows[2] = {**rows[2], "hypothesis": "H005"}
+    ledger = write_ledger(tmp_path, rows)
+    with pytest.raises(ValueError, match="holdout_open"):
+        h.require_holdout(env_path, ledger, histdata, spy)
+
+
+def test_holdout_refuses_used_holdout(tmp_path, histdata):
+    histdata, spy, hashes = holdout_inputs(tmp_path, histdata)
+    env_path, manifest_hash = dev_run_dir(tmp_path, {"stage": "dev"})
+    rows = authorized_rows(manifest_hash, hashes) + [
+        {
+            "kind": "run",
+            "hypothesis": "H006",
+            "stage": "holdout",
+            "results_sha256": "0" * 64,
+        }
+    ]
+    ledger = write_ledger(tmp_path, rows)
+    with pytest.raises(ValueError, match="already used"):
+        h.require_holdout(env_path, ledger, histdata, spy)
