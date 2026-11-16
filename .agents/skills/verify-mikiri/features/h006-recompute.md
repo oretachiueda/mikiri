@@ -5,7 +5,7 @@
 ## Sub-features
 
 - Dates, times, structure, booleans, ints, and the random-control start minutes must match exactly. Other numeric values use `1e-10 * max(1, abs(a), abs(b))`; PSR and percentile use absolute `1e-9`; null must match null.
-- Every Rust output file is compared: `days.parquet`, `accounts.parquet`, `random.parquet` (all rows), `removed_bars.parquet`, every `summary.json` key (input hashes, counts, clock check, segments, random control, reports), plus `SHA256SUMS` verification.
+- Every Rust output file is compared: `days.parquet`, `accounts.parquet`, `random.parquet` (all rows), `removed_bars.parquet`, every `summary.json` key (input hashes, `duplicate_lines_removed`, counts, clock check, segments, random control, reports), plus `SHA256SUMS` verification.
 - Dev compares all calculation outputs and gates A/B/C/D. Holdout additionally verifies the dev match envelope, manifest and results hash, input hashes against the dev ledger run, `holdout_open`, and the one-time-use rule; a used or missing holdout is refused.
 - A mismatch writes a `match: false` envelope in the run directory and exits non-zero.
 

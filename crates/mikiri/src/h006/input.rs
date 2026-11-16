@@ -13,7 +13,7 @@ use std::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bar {
     pub timestamp: DateTime,
     pub open: f64,
@@ -28,9 +28,61 @@ pub enum Stage {
     Holdout,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DuplicateLinesRemoved {
+    pub count: usize,
+    pub timestamps: Vec<String>,
+}
+
 pub struct Inputs {
     pub bars: Vec<Bar>,
     pub hashes: BTreeMap<String, String>,
+    pub duplicate_lines_removed: DuplicateLinesRemoved,
+}
+
+struct KeptLineBodies {
+    data: Vec<u8>,
+    spans: Vec<(usize, usize)>,
+}
+
+impl KeptLineBodies {
+    fn push(&mut self, body: &[u8]) {
+        let start = self.data.len();
+        self.data.extend_from_slice(body);
+        self.spans.push((start, self.data.len()));
+    }
+
+    fn get(&self, index: usize) -> &[u8] {
+        let (start, end) = self.spans[index];
+        &self.data[start..end]
+    }
+}
+
+fn keep_after_dedup(
+    body: &[u8],
+    timestamp_key: &str,
+    timestamp: DateTime,
+    bars: &[Bar],
+    bodies: &KeptLineBodies,
+    removed: &mut DuplicateLinesRemoved,
+) -> Result<bool> {
+    let Some(last) = bars.last() else {
+        return Ok(true);
+    };
+    if timestamp > last.timestamp {
+        return Ok(true);
+    }
+    let idx = match bars.binary_search_by(|b| b.timestamp.cmp(&timestamp)) {
+        Ok(i) => i,
+        Err(_) => return Err("duplicate or out-of-order timestamp".into()),
+    };
+    if bodies.get(idx) == body {
+        removed.count += 1;
+        removed.timestamps.push(timestamp_key.to_owned());
+        Ok(false)
+    } else {
+        Err("duplicate or out-of-order timestamp".into())
+    }
 }
 
 fn zones() -> Result<(TimeZone, TimeZone, TimeZone)> {
@@ -77,6 +129,11 @@ pub fn read(dir: &Path, stage: Stage) -> Result<Inputs> {
     }
     let (ny, _, tokyo) = zones()?;
     let mut bars = Vec::new();
+    let mut bodies = KeptLineBodies {
+        data: Vec::new(),
+        spans: Vec::new(),
+    };
+    let mut duplicate_lines_removed = DuplicateLinesRemoved::default();
     let mut hashes = BTreeMap::new();
     for name in names {
         let id = name
@@ -124,8 +181,16 @@ pub fn read(dir: &Path, stage: Stage) -> Result<Inputs> {
             if timestamp.second() != 0 {
                 return Err("timestamp is not a minute boundary".into());
             }
-            if bars.last().is_some_and(|b: &Bar| b.timestamp >= timestamp) {
-                return Err("duplicate or out-of-order timestamp".into());
+            let body = line.trim_end_matches(['\r', '\n']).as_bytes();
+            if !keep_after_dedup(
+                body,
+                fields[0],
+                timestamp,
+                &bars,
+                &bodies,
+                &mut duplicate_lines_removed,
+            )? {
+                continue;
             }
             let instant = ny_timestamp(timestamp, &ny)?;
             if ny.to_datetime(instant) != timestamp
@@ -141,6 +206,7 @@ pub fn read(dir: &Path, stage: Stage) -> Result<Inputs> {
                 Ok(x)
             };
             let _: f64 = fields[5].parse()?;
+            bodies.push(body);
             bars.push(Bar {
                 timestamp,
                 open: price(fields[1])?,
@@ -150,7 +216,11 @@ pub fn read(dir: &Path, stage: Stage) -> Result<Inputs> {
             });
         }
     }
-    Ok(Inputs { bars, hashes })
+    Ok(Inputs {
+        bars,
+        hashes,
+        duplicate_lines_removed,
+    })
 }
 
 pub fn clean(bars: &[Bar]) -> (Vec<Bar>, Vec<DateTime>) {
@@ -497,7 +567,7 @@ mod tests {
             "20070102 010000;0;1;1;1;0\n",
             "20070102 010000;NaN;1;1;1;0\n",
             "20070102 010000;inf;1;1;1;0\n",
-            "20070102 010000;1;1;1;1;0\n20070102 010000;1;1;1;1;0\n",
+            "20070102 010000;1;1;1;1;0\n20070102 010000;2;2;2;2;0\n",
             "20070102 010100;1;1;1;1;0\n20070102 010000;1;1;1;1;0\n",
             "20240310 023000;1;1;1;1;0\n",
         ] {
@@ -542,6 +612,76 @@ mod tests {
         fs::remove_file(root.join("extra")).unwrap();
         fs::remove_file(&path).unwrap();
         assert!(read(&root, Stage::Dev).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn histdata_root(content_by_year: &[(i32, &str)]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "mikiri-h006-dedup-{}-{}",
+            std::process::id(),
+            content_by_year.len()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        for year in 2007..=2024 {
+            let zip = root.join(format!("HISTDATA_COM_ASCII_EURUSD_M1_{year}.zip"));
+            let member = format!("DAT_ASCII_EURUSD_M1_{year}.csv");
+            let content = content_by_year
+                .iter()
+                .find(|(y, _)| *y == year)
+                .map_or("", |(_, c)| c);
+            zip_file(&zip, &member, content);
+        }
+        (root.clone(), root)
+    }
+
+    #[test]
+    fn dedup_removes_byte_identical_repeats_and_errors_on_conflicts() {
+        let block: String = (0..60)
+            .map(|m| format!("20191027 {:02}{:02}00;1.1;1.1;1.1;1.1;0\n", 19, m))
+            .collect();
+        let repeated = format!("{block}{block}");
+        let (root, _) = histdata_root(&[(2007, ""), (2019, &repeated)]);
+        let input = read(&root, Stage::Dev).unwrap();
+        assert_eq!(input.duplicate_lines_removed.count, 60);
+        assert_eq!(input.duplicate_lines_removed.timestamps.len(), 60);
+        assert_eq!(input.bars.len(), 60);
+        for (i, ts) in input.duplicate_lines_removed.timestamps.iter().enumerate() {
+            assert_eq!(ts, &format!("20191027 19{i:02}00"));
+        }
+        let (root_once, _) = histdata_root(&[(2007, ""), (2019, &block)]);
+        assert_eq!(read(&root_once, Stage::Dev).unwrap().bars, input.bars);
+        fs::remove_dir_all(root_once).unwrap();
+        let (root, path) = histdata_root(&[(2007, "20070102 010000;1;1;1;1;0\n")]);
+        zip_file(
+            &path.join("HISTDATA_COM_ASCII_EURUSD_M1_2007.zip"),
+            "DAT_ASCII_EURUSD_M1_2007.csv",
+            "20070102 010000;1;1;1;1;0\n20070102 010000;1;1;1;1;0\n",
+        );
+        let input = read(&root, Stage::Dev).unwrap();
+        assert_eq!(input.duplicate_lines_removed.count, 1);
+        assert_eq!(input.bars.len(), 1);
+        zip_file(
+            &path.join("HISTDATA_COM_ASCII_EURUSD_M1_2007.zip"),
+            "DAT_ASCII_EURUSD_M1_2007.csv",
+            "20070102 010000;1;1;1;1;0\n20070102 010000;2;2;2;2;0\n",
+        );
+        assert!(read(&root, Stage::Dev).is_err());
+        zip_file(
+            &path.join("HISTDATA_COM_ASCII_EURUSD_M1_2007.zip"),
+            "DAT_ASCII_EURUSD_M1_2007.csv",
+            "20070102 010100;1;1;1;1;0\n20070102 010000;1;1;1;1;0\n",
+        );
+        assert!(read(&root, Stage::Dev).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dedup_across_zip_boundaries() {
+        let line = "20191231 235900;1.1;1.1;1.1;1.1;0\n";
+        let (root, _) = histdata_root(&[(2007, ""), (2019, line), (2020, line)]);
+        let input = read(&root, Stage::Dev).unwrap();
+        assert_eq!(input.duplicate_lines_removed.count, 1);
+        assert_eq!(input.bars.len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 

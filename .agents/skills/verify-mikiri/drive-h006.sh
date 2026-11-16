@@ -97,8 +97,9 @@ assert proc.stdout.find("clock_check ") >= 0 and proc.stdout.find("clock_check "
 verify_manifest(dev)
 summary = json.loads((dev / "summary.json").read_text())
 assert summary["first_calculation_day"] == "2007-01-02", summary["first_calculation_day"]
+assert summary["duplicate_lines_removed"]["count"] == 60, summary.get("duplicate_lines_removed")
 assert any(row["date"] == "2012-01-03" and row["reason"] == "missing_boundary" for row in summary["excluded_days"])
-say(f"dev first={summary['first_calculation_day']} missing-boundary=2012-01-03; clock printed before result")
+say(f"dev duplicate_lines_removed.count=60 first={summary['first_calculation_day']} missing-boundary=2012-01-03; clock printed before result")
 verdict = run_python("dev", dev)
 manifest_hash = sha(dev / "SHA256SUMS")
 if verdict is None:
