@@ -410,14 +410,16 @@ def computation_days(bars: Bars) -> tuple[list[Day], dict]:
 INPUT_START = date(2007, 1, 1)
 
 
-def excluded_days(raw: np.ndarray, days: list[Day]) -> list[dict]:
-    """Weekday dates from the input start to the last bar that are not days.
+def excluded_days(raw: np.ndarray, days: list[Day], stage: str) -> list[dict]:
+    """Weekday dates from the input start through the stage end that are not days.
 
     A weekday with no raw bars at all is "no_bars"; one whose cleaned bars
-    still fail a boundary price is "missing_boundary".
+    still fail a boundary price is "missing_boundary". The enumeration runs
+    through the stage's cutoff end regardless of the last bar date, exactly
+    like the Rust summary.
     """
     raw_dates = {int(value) for value in np.unique(raw // 1_000_000)}
-    last = _calendar_date(max(raw_dates))
+    last = _calendar_date(int(CUTOFFS[stage].decode()))
     calculation = {day.date for day in days}
     result: list[dict] = []
     observed = INPUT_START
@@ -1987,7 +1989,7 @@ def run(
     clock = time_checks(cleaned)
     print("clock_check", json.dumps(clock_summary(clock)), flush=True)
     days, _ = computation_days(cleaned)
-    excluded = excluded_days(bars.stamp, days)
+    excluded = excluded_days(bars.stamp, days, stage)
     spy_rows = read_spy(spy, stage)
     frame = daily_legs(days)
     accounts, stats, gates = run_segments(frame, spy_rows, stage)

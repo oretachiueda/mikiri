@@ -1489,11 +1489,15 @@ def test_excluded_days_reasons_and_range():
     )
     days, _stats = h.computation_days(bars)
     assert [day.date for day in days] == [date(2007, 1, 2), date(2007, 1, 5)]
-    assert h.excluded_days(bars.stamp, days) == [
+    assert h.excluded_days(bars.stamp, days, "dev")[:3] == [
         {"date": "2007-01-01", "reason": "no_bars"},
         {"date": "2007-01-03", "reason": "no_bars"},
         {"date": "2007-01-04", "reason": "missing_boundary"},
     ]
+    assert h.excluded_days(bars.stamp, days, "dev")[-1] == {
+        "date": "2024-10-31",
+        "reason": "no_bars",
+    }
 
 
 def test_compare_tree_tolerance_rules():
