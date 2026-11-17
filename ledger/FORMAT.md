@@ -34,4 +34,6 @@
 
 `results_sha256` is the SHA-256 of the run directory's `SHA256SUMS` file, made with `shasum -a 256 <files>` inside that directory, one line per result file in name order.
 
+A `run` line with `stage` `search` may set `code_commit` to `null` when the search code is not in this repository yet. It then carries `code_sha256` (object, file name to hash) for the code that ran. It carries `reruns` (object) for full reruns after bug fixes; reruns of the same configurations do not add to N. Its `results_sha256` is the SHA-256 of the search's `results.csv` (one row per configuration), and the matching `verdict` uses the same value.
+
 Dates inside `dev` and `holdout` are `YYYY-MM-DD`. `holdout` is `null` when the preregistration puts the recent period into the main test and says why. A `prereg` line is written in the same commit as its document, so `doc_sha256` hashes the merged file bytes.
