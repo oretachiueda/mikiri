@@ -1,5 +1,9 @@
 [advisories]
 yanked = "deny"
+# Review by 2027-02-18, or drop when arrow-array and parquet no longer depend on chrono.
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono is pulled in only via arrow-array and parquet; no replacement path yet" },
+]
 
 [licenses]
 allow = [
