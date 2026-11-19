@@ -4,10 +4,11 @@ from zipfile import ZipFile
 import numpy as np
 
 import gym
+from gym_hidden import CASES
 
 
 def test_scenarios():
-    seed = gym.seed_from([Path(gym.__file__)])
+    seed = gym.seed_from(gym.seeded_files())
     for name, scenario in gym.SCENARIOS.items():
         assert scenario.check(gym.REFERENCE, seed).passed
         for mutant, pipeline in gym.MUTANTS.items():
@@ -70,3 +71,50 @@ def test_trades_and_daily_returns():
         (t.exit_price - t.entry_price) * t.direction / t.entry_price for t in trades
     )
     assert np.isclose(gym.daily_returns(bars, trades).sum(), expected)
+
+
+def test_hidden():
+    seed = gym.seed_from(gym.seeded_files())
+    for case in CASES:
+        assert (
+            gym.SCENARIOS[case.scenario].check(case.pipeline, seed).passed
+            == case.expected_pass
+        ), case.name
+
+
+def test_no_protected_paths(monkeypatch):
+    import builtins
+    import zipfile
+
+    root = Path(gym.__file__).resolve().parent.parent
+    protected = [root / name for name in ("data", "results", "live", "secrets")]
+
+    def guard(path):
+        if isinstance(path, (str, bytes, Path)):
+            resolved = Path(path).resolve()
+            assert not any(resolved.is_relative_to(p) for p in protected)
+
+    original_open, original_path_open, original_zip = (
+        builtins.open,
+        Path.open,
+        zipfile.ZipFile,
+    )
+
+    def open_guard(path, *args, **kwargs):
+        guard(path)
+        return original_open(path, *args, **kwargs)
+
+    def path_guard(path, *args, **kwargs):
+        guard(path)
+        return original_path_open(path, *args, **kwargs)
+
+    def zip_guard(path, *args, **kwargs):
+        guard(path)
+        return original_zip(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", open_guard)
+    monkeypatch.setattr(Path, "open", path_guard)
+    monkeypatch.setattr(zipfile, "ZipFile", zip_guard)
+    monkeypatch.setattr(gym, "ZipFile", zip_guard)
+    gym.paths_for_seed.cache_clear()
+    assert gym.main([]) == 0

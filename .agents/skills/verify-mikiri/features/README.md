@@ -4,6 +4,8 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 
 ## Features
 
+- [`gym.md`](gym.md): run the synthetic trap gym and a mutant.
+
 - [`h001-compute.md`](h001-compute.md): compute the H001 cycles and summary from daily bars.
 - [`h001-recompute.md`](h001-recompute.md): recompute H001 in Python and compare it with Rust.
 - [`h002-screen.md`](h002-screen.md): compute the H002 monthly screen in Rust and compare it with Python.

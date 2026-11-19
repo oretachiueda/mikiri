@@ -1,3 +1,5 @@
+import argparse
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -314,7 +316,6 @@ def check_g5(pipeline, seed):
 @dataclass(frozen=True)
 class SwapCase:
     notional: float
-    direction: str
     held_rate: float
     sold_rate: float
     entry: date
@@ -365,7 +366,7 @@ MUTANTS = {
     "gate_no_n": replace(REFERENCE, gate_b=lambda r, n: h001.psr(list(r)) >= 0.95),
 }
 
-CASE = SwapCase(100000, "short", 0.0525, 0.035, date(2024, 1, 1), date(2024, 1, 16))
+CASE = SwapCase(100000, 0.0525, 0.035, date(2024, 1, 1), date(2024, 1, 16))
 # 100000 * (0.0525 - 0.035 - 0.0025) / 365 * 15.
 ORACLE = 61.64383561643836
 M = 1000
@@ -404,3 +405,57 @@ SCENARIOS = {
     "G4": Scenario("G4", check_g4),
     "G5": Scenario("G5", check_g5),
 }
+
+
+@dataclass(frozen=True)
+class HiddenCase:
+    name: str
+    scenario: str
+    pipeline: Pipeline
+    expected_pass: bool
+
+
+def seeded_files():
+    root = Path(__file__).resolve().parent
+    return [
+        root / "gym.py",
+        *sorted(
+            p
+            for p in (root / "gym_hidden").rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts
+        ),
+    ]
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mutant", choices=MUTANTS)
+    args = parser.parse_args(argv)
+    files = seeded_files()
+    seed = seed_from(files)
+    pipeline = MUTANTS[args.mutant] if args.mutant else REFERENCE
+    outcomes = {
+        name: scenario.check(pipeline, seed) for name, scenario in SCENARIOS.items()
+    }
+    print(
+        json.dumps(
+            {
+                "seed": seed,
+                "files": {
+                    str(p.relative_to(Path(__file__).resolve().parent)): sha256(
+                        p.read_bytes()
+                    ).hexdigest()
+                    for p in files
+                },
+                "scenarios": {
+                    name: {"passed": o.passed, "values": o.values}
+                    for name, o in outcomes.items()
+                },
+            }
+        )
+    )
+    return int(not all(o.passed for o in outcomes.values()))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
