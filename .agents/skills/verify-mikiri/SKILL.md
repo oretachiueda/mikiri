@@ -1,6 +1,6 @@
 ---
 name: verify-mikiri
-description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, h005-compute, h006-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, stats/h005.py, stats/h006.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
+description: Drive Mikiri's command-line tools (h001-compute, h002-compute, h003-compute, h004-compute, h005-compute, h006-compute, stats/h001.py, stats/h002.py, stats/h003.py, stats/h004.py, stats/h005.py, stats/h006.py, stats/gym.py, fetch-tiingo, ib-probe, paper-order) on synthetic inputs and keep proof of what they did. Use after a change to crates/ or stats/, or when a claim needs real behavior instead of test results. Needs no market data or token.
 ---
 
 # Verify Mikiri
@@ -50,6 +50,8 @@ Run `.agents/skills/verify-mikiri/drive-h006.sh` for H006 synthetic dev, guarded
 Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Drive its offline argument and connection-failure paths with `features/ib-probe.md`. A real connection requires human-run TWS and explicit authorization; the skill does not drive it.
 
 Run `cargo build --locked -p paper-order` and use `features/paper-order.md` for offline argument, config, kill-switch, and market-hours refusals. Real TWS status and orders are human-run; the skill never drives them.
+
+Run the synthetic gym using `features/gym.md`.
 
 Error paths and the other entry points are in `features/`. Each recipe there is a literal command with its expected output.
 
