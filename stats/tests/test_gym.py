@@ -12,7 +12,11 @@ def test_scenarios():
         assert scenario.check(gym.REFERENCE, seed).passed
         for mutant, pipeline in gym.MUTANTS.items():
             target = (
-                "G1"
+                "G4"
+                if mutant == "stop_fill_at_level"
+                else "G5"
+                if mutant == "stop_width_includes_entry_bar"
+                else "G1"
                 if mutant.startswith("signal_")
                 else "G2"
                 if mutant.startswith("swap_")

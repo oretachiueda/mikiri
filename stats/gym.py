@@ -1,11 +1,13 @@
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
+from functools import cache
 from hashlib import sha256
 from math import sqrt
 from pathlib import Path
 from statistics import NormalDist
 from tempfile import TemporaryDirectory
+from types import MappingProxyType
 from zipfile import ZipFile
 
 import numpy as np
@@ -26,6 +28,8 @@ class Pipeline:
     swap: Callable
     gate_b: Callable
     trades: Callable
+    width: Callable
+    fill: Callable
 
 
 @dataclass(frozen=True)
@@ -81,12 +85,16 @@ def synthetic_m1(seed, path, minutes, substeps, step, start):
     prices = prices.reshape(minutes, substeps)
     opens = np.concatenate(([start], prices[:-1, -1]))
     assert np.all(prices > 0) and start > 0
-    stamps = []
-    stamp = datetime(2024, 1, 1)
-    while len(stamps) < minutes:
-        if stamp.weekday() < 5:
-            stamps.append(int(stamp.strftime("%Y%m%d%H%M%S")))
-        stamp += timedelta(minutes=1)
+    days = np.arange(
+        (minutes // 1440 // 5 + 2) * 7, dtype="timedelta64[D]"
+    ) + np.datetime64("2024-01-01")
+    days = days[np.arange(len(days)) % 7 < 5]
+    dates = np.char.replace(days.astype(str), "-", "").astype(np.int64)
+    stamps = (
+        dates[:, None] * 1000000
+        + np.arange(1440)[None, :] // 60 * 10000
+        + np.arange(1440)[None, :] % 60 * 100
+    ).ravel()[:minutes]
     return {
         "stamp": np.array(stamps),
         "open": opens,
@@ -168,8 +176,9 @@ START = 1.0
 H = 4
 
 
-def check_g1(pipeline, seed):
-    means = [[], []]
+@cache
+def paths_for_seed(seed):
+    paths = []
     with TemporaryDirectory() as directory:
         for path in range(PATHS):
             m1 = synthetic_m1(seed, path, MINUTES, SUBSTEPS, STEP, START)
@@ -190,14 +199,116 @@ def check_g1(pipeline, seed):
             bars = hourly(
                 {key: np.concatenate([part[key] for part in parts]) for key in m1}
             )
-            for cell, sign in enumerate((1, -1)):
-                trades = pipeline.trades(bars, {"sign": sign, "hold": H})
-                means[cell].append(daily_returns(bars, trades).mean())
+            for values in bars.values():
+                values.setflags(write=False)
+            paths.append(MappingProxyType(bars))
+    return tuple(paths)
+
+
+def check_g1(pipeline, seed):
+    means = [[], []]
+    for bars in paths_for_seed(seed):
+        for cell, sign in enumerate((1, -1)):
+            trades = pipeline.trades(bars, {"sign": sign, "hold": H})
+            means[cell].append(daily_returns(bars, trades).mean())
     values = {
         str(sign): float(np.mean(sample) / (np.std(sample, ddof=1) / sqrt(PATHS)))
         for sign, sample in zip((1, -1), means, strict=True)
     }
     return Outcome("G1", all(abs(value) < 3 for value in values.values()), values)
+
+
+def stop_width(bars, i):
+    return np.mean(bars["high"][i - 20 : i] - bars["low"][i - 20 : i])
+
+
+def stop_width_includes_entry_bar(bars, i):
+    return np.mean(bars["high"][i - 19 : i + 1] - bars["low"][i - 19 : i + 1])
+
+
+def next_open_fill(bars, j, level, direction):
+    return bars["open"][j + 1]
+
+
+def stop_fill_at_level(bars, j, level, direction):
+    return level
+
+
+def stop_trades(bars, config, pipeline, start=20, single=False):
+    trades = []
+    i = start
+    while i + config["hold"] < len(bars["stamp"]):
+        direction = int(np.sign(bars["close"][i - 1] - bars["open"][i - 1]))
+        if not direction:
+            i += 1
+            continue
+        entry = bars["open"][i]
+        stop = entry - direction * config["k"] * pipeline.width(bars, i)
+        end = i + config["hold"]
+        price = bars["open"][end]
+        for j in range(i, end):
+            if (direction > 0 and bars["low"][j] <= stop) or (
+                direction < 0 and bars["high"][j] >= stop
+            ):
+                end = j + 1
+                price = pipeline.fill(bars, j, stop, direction)
+                break
+        trades.append(Trade(i, direction, entry, stop, end, price))
+        i = end
+        if single:
+            break
+    return trades
+
+
+K = 0.1
+STOP_HOLD = 1
+
+
+def check_g4(pipeline, seed):
+    samples = [[], []]
+    for bars in paths_for_seed(seed):
+        for sample, candidate in zip(
+            samples, (pipeline, replace(pipeline, fill=stop_fill_at_level)), strict=True
+        ):
+            sample.append(
+                daily_returns(
+                    bars, stop_trades(bars, {"k": K, "hold": STOP_HOLD}, candidate)
+                ).mean()
+            )
+    ts = [float(np.mean(x) / (np.std(x, ddof=1) / sqrt(PATHS))) for x in samples]
+    return Outcome(
+        "G4", abs(ts[0]) < 3 and abs(ts[1]) >= 3, {"reference": ts[0], "level": ts[1]}
+    )
+
+
+def check_g5(pipeline, seed):
+    checked = changed = 0
+    for bars in paths_for_seed(seed)[:2]:
+        config = {"k": K, "hold": STOP_HOLD}
+        for trade in stop_trades(bars, config, pipeline):
+            altered = {key: value.copy() for key, value in bars.items()}
+            i = trade.entry
+            for key in ("open", "high", "low", "close"):
+                start = i + (key == "open")
+                altered[key][start:] = trade.entry_price + 1.7 * (
+                    altered[key][start:] - trade.entry_price
+                )
+            other = next(
+                (
+                    t
+                    for t in stop_trades(altered, config, pipeline, i, True)
+                    if t.entry == i
+                ),
+                None,
+            )
+            checked += 1
+            changed += other is None or (
+                other.entry,
+                other.direction,
+                other.entry_price,
+                other.stop,
+            ) != (trade.entry, trade.direction, trade.entry_price, trade.stop)
+    return Outcome("G5", changed == 0, {"checked": checked, "changed": changed})
 
 
 @dataclass(frozen=True)
@@ -238,8 +349,14 @@ def annualized_gate(returns, n_cumulative):
     return NormalDist().cdf(z) >= 1 - 0.05 / (n_cumulative + 1)
 
 
-REFERENCE = Pipeline(reference_swap, reference_gate_b, momentum_trades)
+REFERENCE = Pipeline(
+    reference_swap, reference_gate_b, momentum_trades, stop_width, next_open_fill
+)
 MUTANTS = {
+    "stop_fill_at_level": replace(REFERENCE, fill=stop_fill_at_level),
+    "stop_width_includes_entry_bar": replace(
+        REFERENCE, width=stop_width_includes_entry_bar
+    ),
     "signal_uses_entry_bar": replace(REFERENCE, trades=signal_uses_entry_bar),
     "swap_sign_flipped": replace(REFERENCE, swap=lambda c: -reference_swap(c)),
     "swap_zero": replace(REFERENCE, swap=lambda c: 0.0),
@@ -284,4 +401,6 @@ SCENARIOS = {
     "G1": Scenario("G1", check_g1),
     "G2": Scenario("G2", check_g2),
     "G3": Scenario("G3", check_g3),
+    "G4": Scenario("G4", check_g4),
+    "G5": Scenario("G5", check_g5),
 }
