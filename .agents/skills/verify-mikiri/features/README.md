@@ -4,8 +4,8 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 
 ## Features
 
+- [`fetch-tiingo.md`](fetch-tiingo.md): download daily bars from Tiingo.
 - [`gym.md`](gym.md): run the synthetic trap gym and a mutant.
-
 - [`h001-compute.md`](h001-compute.md): compute the H001 cycles and summary from daily bars.
 - [`h001-recompute.md`](h001-recompute.md): recompute H001 in Python and compare it with Rust.
 - [`h002-screen.md`](h002-screen.md): compute the H002 monthly screen in Rust and compare it with Python.
@@ -17,7 +17,6 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 - [`h005-recompute.md`](h005-recompute.md): independently recompute H005 and compare all outputs and gates in Python.
 - [`h006-compute.md`](h006-compute.md): compute H006 on synthetic minute ZIPs with guarded stages.
 - [`h006-recompute.md`](h006-recompute.md): independently compare H006 outputs in Python, with holdout refusals.
-- [`fetch-tiingo.md`](fetch-tiingo.md): download daily bars from Tiingo.
 
 - [`ib-probe.md`](ib-probe.md): validate arguments and fail safely without a TWS connection; live demo connection is human-run.
 

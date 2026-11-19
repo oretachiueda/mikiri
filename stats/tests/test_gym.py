@@ -51,6 +51,20 @@ def test_seed(tmp_path):
     assert seed != gym.seed_from([a, b])
 
 
+def test_uniform_streams_are_distinct():
+    for left, right in ((0, 1), (1, 2), (5, 6)):
+        assert (
+            np.intersect1d(
+                gym.uniforms(left, 0, 100000), gym.uniforms(right, 0, 100000)
+            ).size
+            == 0
+        )
+    assert (
+        np.intersect1d(gym.uniforms(0, 0, 100000), gym.uniforms(0, 1, 100000)).size == 0
+    )
+    assert not np.array_equal(gym.uniforms(1, 2, 100000), gym.uniforms(2, 1, 100000))
+
+
 def test_normals():
     values = gym.normals(42, 0, 100000)
     assert np.array_equal(values, gym.normals(42, 0, 100000))

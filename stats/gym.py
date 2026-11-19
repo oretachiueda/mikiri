@@ -48,11 +48,12 @@ def seed_from(paths: list[Path]) -> int:
 
 
 def uniforms(seed, stream, count):
-    counters = (
-        np.arange(count, dtype=np.uint64)
-        ^ np.uint64(seed)
-        ^ h006.splitmix64(np.array([stream], dtype=np.uint64))[0]
-    )
+    key = h006.splitmix64(
+        np.array(
+            [np.uint64(seed) ^ h006.splitmix64(np.array([stream], dtype=np.uint64))[0]]
+        )
+    )[0]
+    counters = key + np.arange(count, dtype=np.uint64)
     return ((h006.splitmix64(counters) >> np.uint64(11)).astype(np.float64) + 1) / (
         2**53 + 1
     )
