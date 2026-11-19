@@ -29,10 +29,10 @@ fn hash(entry: &Entry) -> Result<String, String> {
 fn date(s: &str) -> Result<Date, String> {
     Date::parse(s, &Iso8601::DATE).map_err(|e| e.to_string())
 }
-fn read_log(path: &Path) -> Result<Vec<Entry>, (i32, String)> {
+fn read_log(path: &Path, allow_missing: bool) -> Result<Vec<Entry>, (i32, String)> {
     let raw = match fs::read_to_string(path) {
         Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) if allow_missing && e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
         Err(e) => return Err((1, e.to_string())),
     };
     let mut entries: Vec<Entry> = Vec::new();
@@ -53,7 +53,7 @@ fn read_log(path: &Path) -> Result<Vec<Entry>, (i32, String)> {
     Ok(entries)
 }
 pub fn verify(path: &Path) -> Result<String, (i32, String)> {
-    let entries = read_log(path)?;
+    let entries = read_log(path, false)?;
     Ok(format!(
         "lines={} last_hash={}",
         entries.len(),
@@ -72,7 +72,7 @@ pub fn record(
         return Err((1, "empty ticker".into()));
     }
     let today = date(today).map_err(|e| (1, e))?;
-    let mut entries = read_log(log)?;
+    let mut entries = read_log(log, true)?;
     if entries.first().is_some_and(|e| e.ticker != ticker) {
         return Err((2, "ticker mismatch".into()));
     }

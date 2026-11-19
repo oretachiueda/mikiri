@@ -156,3 +156,27 @@ fn records_and_rejects_alerts_without_writing() {
     assert_eq!(f.verify().status.code(), Some(3));
     f.alert("TEST", "2024-01-04", 3);
 }
+
+#[test]
+fn missing_log_is_an_error_for_verify_but_record_creates_it() {
+    let f = Fixture::new();
+    let result = f.verify();
+    assert_eq!(result.status.code(), Some(1));
+    assert!(!f.log.exists());
+    f.bars(&[("2024-01-02", 10.0)]);
+    assert!(f.record("TEST", "2024-01-02").status.success());
+    assert!(f.verify().status.success());
+}
+
+#[test]
+fn fixed_line_hash_pins_number_format() {
+    let f = Fixture::new();
+    fs::write(&f.bars, b"[{\"date\":\"2024-01-02T00:00:00Z\",\"close\":1.2300000000000002,\"divCash\":0,\"splitFactor\":1}]").expect("fixture");
+    assert!(f.record("TEST", "2024-01-02").status.success());
+    let entry: serde_json::Value =
+        serde_json::from_slice(&fs::read(&f.log).expect("log")).expect("JSON");
+    assert_eq!(
+        entry["hash"],
+        "a90014459e7eaeec8c1499042bbe968668fb7b660c785040ea9d674fd3a8b3bc"
+    );
+}
