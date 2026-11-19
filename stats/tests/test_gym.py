@@ -11,7 +11,13 @@ def test_scenarios():
     for name, scenario in gym.SCENARIOS.items():
         assert scenario.check(gym.REFERENCE, seed).passed
         for mutant, pipeline in gym.MUTANTS.items():
-            target = "G2" if mutant.startswith("swap_") else "G3"
+            target = (
+                "G1"
+                if mutant.startswith("signal_")
+                else "G2"
+                if mutant.startswith("swap_")
+                else "G3"
+            )
             assert scenario.check(pipeline, seed).passed == (name != target), mutant
 
 
@@ -45,3 +51,18 @@ def test_normals():
     assert np.array_equal(values, gym.normals(42, 0, 100000))
     assert abs(values.mean()) < 0.02
     assert abs(values.std() - 1) < 0.02
+
+
+def test_trades_and_daily_returns():
+    bars = gym.hourly(gym.synthetic_m1(42, 0, 3 * 1440, 4, 0.00001, 1.0))
+    trades = gym.momentum_trades(bars, {"sign": 1, "hold": 4})
+    assert trades
+    for trade in trades:
+        assert trade.entry >= 1
+        assert trade.direction == np.sign(
+            bars["close"][trade.entry - 1] - bars["open"][trade.entry - 1]
+        )
+    expected = sum(
+        (t.exit_price - t.entry_price) * t.direction / t.entry_price for t in trades
+    )
+    assert np.isclose(gym.daily_returns(bars, trades).sum(), expected)

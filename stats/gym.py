@@ -1,10 +1,11 @@
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from hashlib import sha256
 from math import sqrt
 from pathlib import Path
 from statistics import NormalDist
+from tempfile import TemporaryDirectory
 from zipfile import ZipFile
 
 import numpy as np
@@ -24,6 +25,7 @@ class Outcome:
 class Pipeline:
     swap: Callable
     gate_b: Callable
+    trades: Callable
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,130 @@ def read_histdata_zip(path, pair, year):
     )
 
 
+def synthetic_m1(seed, path, minutes, substeps, step, start):
+    prices = start + np.cumsum(normals(seed, path, minutes * substeps) * step)
+    prices = prices.reshape(minutes, substeps)
+    opens = np.concatenate(([start], prices[:-1, -1]))
+    assert np.all(prices > 0) and start > 0
+    stamps = []
+    stamp = datetime(2024, 1, 1)
+    while len(stamps) < minutes:
+        if stamp.weekday() < 5:
+            stamps.append(int(stamp.strftime("%Y%m%d%H%M%S")))
+        stamp += timedelta(minutes=1)
+    return {
+        "stamp": np.array(stamps),
+        "open": opens,
+        "high": np.maximum(opens, prices.max(axis=1)),
+        "low": np.minimum(opens, prices.min(axis=1)),
+        "close": prices[:, -1],
+    }
+
+
+def hourly(m1):
+    hours = m1["stamp"] // 10000 * 10000
+    stamps, starts = np.unique(hours, return_index=True)
+    ends = np.r_[starts[1:], len(hours)]
+    return {
+        "stamp": stamps,
+        "open": m1["open"][starts],
+        "high": np.maximum.reduceat(m1["high"], starts),
+        "low": np.minimum.reduceat(m1["low"], starts),
+        "close": m1["close"][ends - 1],
+    }
+
+
+@dataclass(frozen=True)
+class Trade:
+    entry: int
+    direction: int
+    entry_price: float
+    stop: float | None
+    exit: int
+    exit_price: float
+
+
+def _trades(bars, config, offset):
+    trades = []
+    i = 1
+    while i + config["hold"] < len(bars["stamp"]):
+        signal = int(np.sign(bars["close"][i - offset] - bars["open"][i - offset]))
+        if signal:
+            end = i + config["hold"]
+            trades.append(
+                Trade(
+                    i,
+                    config["sign"] * signal,
+                    bars["open"][i],
+                    None,
+                    end,
+                    bars["open"][end],
+                )
+            )
+            i = end
+        else:
+            i += 1
+    return trades
+
+
+def momentum_trades(bars, config):
+    return _trades(bars, config, 1)
+
+
+def signal_uses_entry_bar(bars, config):
+    return _trades(bars, config, 0)
+
+
+def daily_returns(bars, trades):
+    days, inverse = np.unique(bars["stamp"] // 1000000, return_inverse=True)
+    returns = np.zeros(len(days))
+    for trade in trades:
+        returns[inverse[trade.exit]] += (
+            (trade.exit_price - trade.entry_price) * trade.direction / trade.entry_price
+        )
+    return returns
+
+
+PATHS = 20
+MINUTES = 6 * 5 * 24 * 60
+SUBSTEPS = 4
+STEP = 0.00001
+START = 1.0
+H = 4
+
+
+def check_g1(pipeline, seed):
+    means = [[], []]
+    with TemporaryDirectory() as directory:
+        for path in range(PATHS):
+            m1 = synthetic_m1(seed, path, MINUTES, SUBSTEPS, STEP, START)
+            years = m1["stamp"] // 10000000000
+            parts = []
+            for year in np.unique(years):
+                mask = years == year
+                filename = write_histdata(
+                    Path(directory),
+                    "EURUSD",
+                    int(year),
+                    *(
+                        m1[key][mask]
+                        for key in ("stamp", "open", "high", "low", "close")
+                    ),
+                )
+                parts.append(read_histdata_zip(filename, "EURUSD", int(year)))
+            bars = hourly(
+                {key: np.concatenate([part[key] for part in parts]) for key in m1}
+            )
+            for cell, sign in enumerate((1, -1)):
+                trades = pipeline.trades(bars, {"sign": sign, "hold": H})
+                means[cell].append(daily_returns(bars, trades).mean())
+    values = {
+        str(sign): float(np.mean(sample) / (np.std(sample, ddof=1) / sqrt(PATHS)))
+        for sign, sample in zip((1, -1), means, strict=True)
+    }
+    return Outcome("G1", all(abs(value) < 3 for value in values.values()), values)
+
+
 @dataclass(frozen=True)
 class SwapCase:
     notional: float
@@ -112,8 +238,9 @@ def annualized_gate(returns, n_cumulative):
     return NormalDist().cdf(z) >= 1 - 0.05 / (n_cumulative + 1)
 
 
-REFERENCE = Pipeline(reference_swap, reference_gate_b)
+REFERENCE = Pipeline(reference_swap, reference_gate_b, momentum_trades)
 MUTANTS = {
+    "signal_uses_entry_bar": replace(REFERENCE, trades=signal_uses_entry_bar),
     "swap_sign_flipped": replace(REFERENCE, swap=lambda c: -reference_swap(c)),
     "swap_zero": replace(REFERENCE, swap=lambda c: 0.0),
     "gate_always_reject": replace(REFERENCE, gate_b=lambda r, n: False),
@@ -153,4 +280,8 @@ def check_g3(pipeline, seed):
     )
 
 
-SCENARIOS = {"G2": Scenario("G2", check_g2), "G3": Scenario("G3", check_g3)}
+SCENARIOS = {
+    "G1": Scenario("G1", check_g1),
+    "G2": Scenario("G2", check_g2),
+    "G3": Scenario("G3", check_g3),
+}
