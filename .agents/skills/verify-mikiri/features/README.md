@@ -20,6 +20,8 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 
 - [`ib-probe.md`](ib-probe.md): validate arguments and fail safely without a TWS connection; live demo connection is human-run.
 
+- [`paper-recorder.md`](paper-recorder.md): record and verify a synthetic offline hash chain.
+
 - [`paper-order.md`](paper-order.md): verify guarded demo-order argument and preconnection refusal paths offline; real connections are human-run.
 
 ## Baseline preconditions
