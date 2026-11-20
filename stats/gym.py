@@ -16,6 +16,7 @@ import numpy as np
 
 import h001
 import h006
+import overfit
 
 
 @dataclass(frozen=True)
@@ -399,12 +400,43 @@ def check_g3(pipeline, seed):
     )
 
 
+def check_g6(pipeline, seed):
+    # Hoeffding: 128 independent null matrices, P(|mean - 0.5| >= 0.15) <= 0.0064.
+    rates = []
+    planted = []
+    for i in range(128):
+        matrix = normals(seed, 10000 + i, 240 * 8).reshape(240, 8)
+        rates.append(overfit.pbo_cscv(matrix, 6)[0])
+        matrix[:, 0] += 2
+        planted.append(overfit.pbo_cscv(matrix, 6)[0])
+    splits, paths = overfit.cpcv_splits(60, 6, 2, 2, 3)
+    valid = True
+    count = 0
+    for train, test in splits:
+        count += 1
+        for t in test:
+            valid &= not np.any((train >= t - 2) & (train <= t + 3))
+    noise, edge = float(np.mean(rates)), float(np.mean(planted))
+    return Outcome(
+        "G6",
+        0.35 <= noise <= 0.65 and edge <= 0.1 and valid and count == 15 and paths == 5,
+        {
+            "noise": noise,
+            "planted": edge,
+            "splits": count,
+            "paths": paths,
+            "purged": bool(valid),
+        },
+    )
+
+
 SCENARIOS = {
     "G1": Scenario("G1", check_g1),
     "G2": Scenario("G2", check_g2),
     "G3": Scenario("G3", check_g3),
     "G4": Scenario("G4", check_g4),
     "G5": Scenario("G5", check_g5),
+    "G6": Scenario("G6", check_g6),
 }
 
 
@@ -420,6 +452,7 @@ def seeded_files():
     root = Path(__file__).resolve().parent
     return [
         root / "gym.py",
+        root / "overfit.py",
         *sorted(
             p
             for p in (root / "gym_hidden").rglob("*")
