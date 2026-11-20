@@ -4,7 +4,7 @@
 
 ## Sub-features
 
-- `record` appends new dates, rejects revisions, gaps, stale inputs, and ticker mismatches.
+- `record` appends new dates, rejects revisions, missing XNYS sessions, stale inputs, and ticker mismatches.
 - Repeating the same input appends nothing.
 - `verify` checks the full chain; a damaged chain exits 3.
 

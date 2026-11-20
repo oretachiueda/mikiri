@@ -9,6 +9,35 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, Duration, OffsetDateTime};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Session {
+    Closed,
+    Full,
+    EarlyClose,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("date outside XNYS calendar")]
+pub struct CalendarError;
+
+pub fn session(date: Date) -> Result<Session, CalendarError> {
+    if !(time::macros::date!(1993 - 01 - 01)..=time::macros::date!(2027 - 11 - 19)).contains(&date)
+    {
+        return Err(CalendarError);
+    }
+    let key = date.to_string();
+    Ok(include_str!("xnys.txt")
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix(&key).and_then(|s| match s {
+                " F" => Some(Session::Full),
+                " E" => Some(Session::EarlyClose),
+                _ => None,
+            })
+        })
+        .unwrap_or(Session::Closed))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -116,7 +145,6 @@ pub enum IntentError {
 }
 
 impl Intent {
-    // shortcut: UTC dates match US regular-hours trading days (14:30–21:00 UTC in winter); use exchange-calendar dates before adding extended hours.
     pub fn new(
         day: Date,
         strategy: &str,
@@ -178,6 +206,8 @@ pub struct Account {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Reject {
+    #[error("date is outside an XNYS session")]
+    Calendar,
     #[error("symbol is not allowed")]
     Symbol,
     #[error("account daily profit/loss is not finite")]
@@ -203,6 +233,12 @@ pub fn check(
     orders_today: u64,
     intent: &Intent,
 ) -> Result<Approved, Reject> {
+    if !matches!(
+        session(intent.0.day),
+        Ok(Session::Full | Session::EarlyClose)
+    ) {
+        return Err(Reject::Calendar);
+    }
     if !limits.0.symbols.contains(&intent.0.symbol) {
         return Err(Reject::Symbol);
     }

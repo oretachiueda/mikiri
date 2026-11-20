@@ -402,3 +402,18 @@ fn journal_share_sum_rejects_positive_and_negative_overflow() {
     assert_eq!(sum_shares([i64::MAX, -1]).unwrap(), i64::MAX - 1);
     assert_eq!(sum_shares([i64::MIN, 1]).unwrap(), i64::MIN + 1);
 }
+
+#[test]
+fn xnys_sessions_and_guard_refusal() {
+    assert_eq!(session(date!(2025 - 07 - 04)), Ok(Session::Closed));
+    assert_eq!(session(date!(2025 - 11 - 28)), Ok(Session::EarlyClose));
+    assert_eq!(session(date!(2025 - 07 - 07)), Ok(Session::Full));
+    assert_eq!(session(date!(2028 - 01 - 01)), Err(CalendarError));
+    for day in [date!(2025 - 07 - 04), date!(2028 - 01 - 01)] {
+        let intent = Intent::new(day, "demo", "SPY", Side::Buy, 1).unwrap();
+        assert_eq!(
+            check(&limits(), &account(0, 0.0), 0, &intent).unwrap_err(),
+            Reject::Calendar
+        );
+    }
+}
