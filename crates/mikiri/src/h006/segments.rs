@@ -414,6 +414,35 @@ mod tests {
     fn near(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-12, "{a} != {b}");
     }
+    // Values computed once with empyrical-reloaded 0.5.0 (Apache-2.0); the library is not a dependency.
+    #[test]
+    fn empyrical_sharpe_vectors() {
+        near(
+            sharpe(&[
+                0.01, 0.02, 0.015, 0.005, 0.03, 0.012, 0.018, 0.007, 0.025, 0.011,
+            ])
+            .unwrap(),
+            30.463302430398368,
+        );
+        near(
+            sharpe(&[
+                0.02, -0.01, 0.015, -0.025, 0.03, -0.005, 0.01, -0.012, 0.018, 0.004,
+            ])
+            .unwrap(),
+            4.1579487189486981,
+        );
+        near(
+            sharpe(&[0.05, 0.02, -0.20, -0.10, 0.08, 0.12, 0.15, 0.04, 0.03, 0.02]).unwrap(),
+            3.2500404150309685,
+        );
+        near(
+            sharpe(&[
+                0.01, 0.0, -0.01, 0.02, 0.0, -0.005, 0.015, -0.01, 0.005, 0.01,
+            ])
+            .unwrap(),
+            5.4007873441756491,
+        );
+    }
     fn spy() -> Vec<DailyBar> {
         tiingo::parse_daily_bars(br#"[{"date":"2007-07-02T00:00:00Z","close":100,"divCash":0,"splitFactor":1},{"date":"2008-01-02T00:00:00Z","close":50,"divCash":1,"splitFactor":2},{"date":"2019-11-01T00:00:00Z","close":50,"divCash":0,"splitFactor":1},{"date":"2020-11-01T00:00:00Z","close":50,"divCash":0,"splitFactor":1},{"date":"2024-11-01T00:00:00Z","close":50,"divCash":0,"splitFactor":1},{"date":"2025-11-01T00:00:00Z","close":50,"divCash":0,"splitFactor":1}]"#).unwrap()
     }
