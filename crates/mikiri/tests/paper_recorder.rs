@@ -180,3 +180,14 @@ fn fixed_line_hash_pins_number_format() {
         "a90014459e7eaeec8c1499042bbe968668fb7b660c785040ea9d674fd3a8b3bc"
     );
 }
+
+#[test]
+fn gaps_follow_exchange_sessions() {
+    let f = Fixture::new();
+    f.bars(&[("2025-01-17", 10.0), ("2025-01-21", 11.0)]);
+    assert!(f.record("TEST", "2025-01-21").status.success());
+    f.bars(&[("2025-01-23", 12.0)]);
+    let result = f.record("TEST", "2025-01-23");
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("bar gap"));
+}

@@ -1514,6 +1514,7 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "flate2",
+ "guard",
  "jiff",
  "libm",
  "parquet",

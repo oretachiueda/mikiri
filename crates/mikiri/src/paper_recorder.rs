@@ -98,9 +98,18 @@ pub fn record(
             if bar.date <= last_date {
                 continue;
             }
-            if (bar.date - last_date).whole_days() > 4 {
-                return Err((2, "bar gap".into()));
+            guard::session(last_date).map_err(|e| (2, e.to_string()))?;
+            let mut day = last_date;
+            while let Some(next) = day.next_day() {
+                if next >= bar.date {
+                    break;
+                }
+                if guard::session(next).map_err(|e| (2, e.to_string()))? != guard::Session::Closed {
+                    return Err((2, "bar gap".into()));
+                }
+                day = next;
             }
+            guard::session(bar.date).map_err(|e| (2, e.to_string()))?;
         }
         let mut e = Entry {
             seq: entries.len(),
