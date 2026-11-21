@@ -121,7 +121,7 @@ def test_public_dates_and_signal_calendar():
     ]
     assert public_and_signal(date(2013, 10, 1), calendar) == (calendar[0], calendar[1])
     assert public_and_signal(date(2019, 3, 12), calendar) == (calendar[2], calendar[3])
-    assert public_and_signal(date(2024, 1, 1), calendar) == (calendar[4], calendar[5])
+    assert public_and_signal(date(2024, 1, 2), calendar) == (calendar[4], calendar[5])
 
 
 def test_readers_preserve_earlier_values_when_future_changes(tmp_path):
@@ -259,15 +259,20 @@ def test_fx8_incomplete_joint_window_and_zero_portfolio():
         size_positions(day, {"JPY": 1, "EUR": -1}, prices, "fx8")
 
 
-def test_public_non_tuesday_waits_seven_days():
+def test_public_non_tuesday_waits_fourteen_days():
     from datetime import date
 
     from s002 import public_and_signal
 
-    calendar = [date(2024, 1, 8), date(2024, 1, 9), date(2024, 1, 10)]
-    assert public_and_signal(date(2024, 1, 1), calendar) == (calendar[0], calendar[1])
+    calendar = [
+        date(2024, 1, 8),
+        date(2024, 1, 15),
+        date(2024, 1, 16),
+        date(2024, 1, 18),
+    ]
+    assert public_and_signal(date(2024, 1, 1), calendar) == (calendar[1], calendar[2])
     assert public_and_signal(date(2024, 1, 2), calendar) == (calendar[0], calendar[1])
-    assert public_and_signal(date(2024, 1, 3), calendar) == (calendar[2], None)
+    assert public_and_signal(date(2024, 1, 3), calendar) == (calendar[3], None)
 
 
 def test_one_trade_spot_carry_markup_spread_and_exit():

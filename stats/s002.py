@@ -185,7 +185,7 @@ def public_and_signal(day: date, calendar: list[date]) -> tuple[date, date | Non
     elif date(2018, 12, 24) <= day <= date(2019, 3, 12):
         public = date(2019, 3, 29)
     else:
-        public = day + timedelta(days=6 if day.weekday() == 1 else 7)
+        public = day + timedelta(days=6 if day.weekday() == 1 else 14)
     index = bisect.bisect_left(calendar, public)
     if index == len(calendar):
         raise ValueError("calendar ends before public date")
