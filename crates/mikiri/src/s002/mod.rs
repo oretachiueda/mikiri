@@ -50,6 +50,7 @@ struct Row {
     max_gross: f64,
     max_dd: f64,
     psr: f64,
+    after: Vec<f64>,
 }
 
 fn clean_commit() -> Option<String> {
@@ -92,6 +93,7 @@ fn rows(input: &input::Inputs, market: &Market, sizing: &mut Sizing) -> Result<V
                 max_gross: account.max_gross,
                 max_dd: max_drawdown(&after),
                 psr: psr(&after, sr_after_daily, 0.0)?,
+                after,
             })
         })
         .collect()
@@ -102,6 +104,23 @@ fn winner_order(a: &Row, b: &Row) -> Ordering {
         return a.id.cmp(&b.id);
     }
     b.sr_after_daily.total_cmp(&a.sr_after_daily)
+}
+
+fn write_daily_csv(mut csv: impl Write, dates: &[Date], rows: &[Row]) -> Result<()> {
+    write!(csv, "date")?;
+    for row in rows {
+        write!(csv, ",{}", row.id)?;
+    }
+    writeln!(csv)?;
+    for (index, date) in dates.iter().enumerate() {
+        write!(csv, "{date}")?;
+        for row in rows {
+            write!(csv, ",{:?}", row.after[index])?;
+        }
+        writeln!(csv)?;
+    }
+    csv.flush()?;
+    Ok(())
 }
 
 /// Run S002 dev, recent-window tax replay, and the circular-shift gate.
@@ -165,6 +184,11 @@ pub fn run(cot: &Path, fred: &Path, spy: &Path, out: &Path) -> Result<String> {
         "code": clean_commit(),
     });
     publish_output_directory(out, |dir| {
+        write_daily_csv(
+            BufWriter::new(File::create(dir.join("daily.csv"))?),
+            dates,
+            &rows,
+        )?;
         let mut csv = BufWriter::new(File::create(dir.join("results.csv"))?);
         writeln!(
             csv,
@@ -191,4 +215,56 @@ pub fn run(cot: &Path, fred: &Path, spy: &Path, out: &Path) -> Result<String> {
         Ok(())
     })?;
     output_hashes(out, &["results.csv", "summary.json"])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daily_csv_keeps_preregistered_order_and_exact_return_bits() {
+        let dates = [DEV_START, date(1996, 1, 3)];
+        let rows: Vec<_> = Config::all()
+            .enumerate()
+            .map(|(i, config)| Row {
+                config,
+                id: config.id(),
+                sr_after_daily: 0.0,
+                sr_before: 0.0,
+                trades_per_year: 0.0,
+                max_gross: 0.0,
+                max_dd: 0.0,
+                psr: 0.0,
+                after: vec![
+                    -0.0,
+                    f64::from_bits(1.234_567_890_123_456_7e-10_f64.to_bits() + i as u64),
+                ],
+            })
+            .collect();
+        let mut output = Vec::new();
+        write_daily_csv(&mut output, &dates, &rows).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let mut lines = output.lines();
+        let header: Vec<_> = lines.next().unwrap().split(',').collect();
+        assert_eq!(header[0], "date");
+        assert_eq!(header.len(), 25);
+        assert_eq!(&header[1..3], ["lvl-b0-h1-jpy", "lvl-b0-h1-fx8"]);
+        assert_eq!(header[24], "z156-b1-h2-fx8");
+        assert_eq!(
+            header[1..],
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>()
+        );
+        for (index, date) in dates.iter().enumerate() {
+            let mut fields = lines.next().unwrap().split(',');
+            assert_eq!(fields.next().unwrap(), date.to_string());
+            for row in &rows {
+                assert_eq!(
+                    fields.next().unwrap().parse::<f64>().unwrap().to_bits(),
+                    row.after[index].to_bits()
+                );
+            }
+            assert_eq!(fields.next(), None);
+        }
+        assert_eq!(lines.next(), None);
+    }
 }
