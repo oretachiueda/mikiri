@@ -393,6 +393,13 @@ fn output_temp_dir(out: &Path) -> std::path::PathBuf {
 
 pub(crate) fn publish_outputs(out: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
     checked_output_path(out)?;
+    publish_output_directory(out, write)
+}
+
+pub(crate) fn publish_output_directory(
+    out: &Path,
+    write: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     if out.exists() {
         return Err("output directory already exists".into());
     }

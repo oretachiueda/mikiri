@@ -1,8 +1,7 @@
-#![allow(dead_code)]
-
 use super::{
     Result,
     input::{LEGS, Report},
+    mean, sample_variance,
 };
 use jiff::{
     Span,
@@ -10,7 +9,22 @@ use jiff::{
 };
 use std::collections::BTreeMap;
 
-pub(super) type Actions = [Option<i8>; LEGS];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Action {
+    Report(i8),
+    Exit,
+}
+
+impl Action {
+    pub fn direction(self) -> i8 {
+        match self {
+            Self::Report(direction) => direction,
+            Self::Exit => 0,
+        }
+    }
+}
+
+pub(super) type Actions = [Option<Action>; LEGS];
 
 #[derive(Clone, Copy)]
 pub(super) enum Signal {
@@ -42,12 +56,11 @@ impl Signal {
         if points.len() != window {
             return Ok(None);
         }
-        let mean = points.iter().sum::<f64>() / window as f64;
-        let variance = points.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (window - 1) as f64;
+        let variance = sample_variance(&points);
         if !variance.is_finite() || variance <= 0.0 {
             return Err("invalid COT window variance".into());
         }
-        Ok(Some((report.hp - mean) / variance.sqrt()))
+        Ok(Some((report.hp - mean(&points)) / variance.sqrt()))
     }
 }
 
@@ -176,21 +189,24 @@ pub(super) fn schedule(
                     qualified = score.is_some();
                     expired = false;
                     if !config.even || report.slot % 2 == 0 {
-                        action = Some(score.map_or(0, |score| config.quote_direction(leg, score)));
-                    } else if !qualified && action.unwrap_or(direction) != 0 {
-                        action = Some(0);
+                        action = Some(match score {
+                            Some(score) => Action::Report(config.quote_direction(leg, score)),
+                            None => Action::Exit,
+                        });
+                    } else if !qualified && action.map_or(direction, Action::direction) != 0 {
+                        action = Some(Action::Exit);
                     }
                 }
             }
             if expires.is_some_and(|expiry| day >= expiry) {
                 if !expired {
-                    action = Some(0);
+                    action = Some(Action::Exit);
                 }
                 expired = true;
             }
             if index >= start {
                 if let Some(next) = action {
-                    direction = next;
+                    direction = next.direction();
                 }
                 schedule.actions[index][leg] = action;
             }
@@ -231,7 +247,7 @@ mod tests {
         let data = reports(0, vec![report(dates[0], 170, 0.8)]);
         let decisions = schedule(&dates, &data, Config::all().next().unwrap(), 0).unwrap();
         assert_eq!(public_bound(dates[0]).unwrap(), date(1996, 1, 8));
-        let expected = vec![None, None, Some(-1), None];
+        let expected = vec![None, None, Some(Action::Report(-1)), None];
         assert_eq!(
             decisions
                 .actions
@@ -254,7 +270,7 @@ mod tests {
         let s = schedule(&dates, &data, Config::all().next().unwrap(), 0).unwrap();
         assert_eq!(public_bound(dates[0]).unwrap(), dates[2]);
         assert_eq!(s.actions[2][0], None);
-        assert_eq!(s.actions[3][0], Some(-1));
+        assert_eq!(s.actions[3][0], Some(Action::Report(-1)));
     }
 
     #[test]
@@ -272,7 +288,7 @@ mod tests {
         let events: Vec<_> = dates
             .iter()
             .zip(s.actions)
-            .filter_map(|(&day, row)| Some((day, row[0]?)))
+            .filter_map(|(&day, row)| Some((day, row[0]?.direction())))
             .collect();
         assert_eq!(
             events,
@@ -302,7 +318,7 @@ mod tests {
         let events: Vec<_> = dates
             .iter()
             .zip(s.actions)
-            .filter_map(|(&day, row)| Some((day, row[6]?)))
+            .filter_map(|(&day, row)| Some((day, row[6]?.direction())))
             .collect();
         assert_eq!(
             events,

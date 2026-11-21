@@ -1,9 +1,8 @@
-#![allow(dead_code)]
-
 use super::{
     DEV_START, Result,
     input::{Inputs, LEGS, Series, days_between},
-    signals::{Actions, Schedule, usd_base},
+    mean, sample_variance,
+    signals::{Action, Schedule, usd_base},
 };
 use crate::h005::core::Taxes;
 use jiff::{Span, civil::Date};
@@ -77,11 +76,6 @@ fn carry(
         quote_long / 365.0,
         markup(leg) * days as f64 / 365.0,
     )))
-}
-
-pub(super) fn sample_variance(values: &[f64]) -> f64 {
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
-    values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64
 }
 
 impl Market {
@@ -168,7 +162,11 @@ impl Market {
             .copied()
             .flatten()
             .ok_or("missing ending JPY SPY value")?;
-        Ok(last / first)
+        let ratio = last / first;
+        if !ratio.is_finite() || ratio <= 0.0 {
+            return Err("invalid JPY SPY return".into());
+        }
+        Ok(ratio)
     }
 }
 
@@ -200,7 +198,7 @@ fn joint_covariance(
     }
     let mut centered = window;
     for &i in included {
-        let mean = window[i].iter().sum::<f64>() / VOL_WINDOW as f64;
+        let mean = mean(&window[i]);
         for value in &mut centered[i] {
             *value -= mean;
         }
@@ -403,16 +401,29 @@ pub(super) fn simulate(
         account.equity = tax.apply(&market.dates, index, previous_equity, after)?;
 
         let source = market.start + (index - market.start + t - offset) % t;
-        let actions: Actions = schedule.actions[source];
+        let actions = schedule.actions[source];
         if actions.iter().all(Option::is_none) {
             continue;
         }
+        let rebalance = actions
+            .iter()
+            .any(|action| matches!(action, Some(Action::Report(_))));
         for (leg, action) in actions.into_iter().enumerate() {
-            if let Some(direction) = action {
-                let disabled = shift.is_some() && direction != 0 && !schedule.active[index][leg];
+            if let Some(action) = action {
+                let direction = action.direction();
+                let row = market.legs[index][leg];
+                let disabled = shift.is_some()
+                    && direction != 0
+                    && !(schedule.active[index][leg] && row.rates_ready && row.sigma.is_some());
                 account.skipped += usize::from(disabled);
                 directions[leg] = if disabled { 0 } else { direction };
+                if !rebalance {
+                    pending[leg].push(0.0);
+                }
             }
+        }
+        if !rebalance {
+            continue;
         }
         let targets = sizing.targets(market, index, directions)?;
         account.max_gross = account.max_gross.max(targets.iter().map(|x| x.abs()).sum());

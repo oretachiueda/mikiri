@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use super::{DEV_END, Result};
 use jiff::civil::{Date, date};
 use sha2::{Digest, Sha256};

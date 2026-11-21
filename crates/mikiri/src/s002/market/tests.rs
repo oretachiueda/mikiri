@@ -59,7 +59,7 @@ fn strict_previous_fixes_and_fill_after_signal_g5() {
     let mut market = Market::new(&input).unwrap();
     market.start = index;
     let mut signals = empty_schedule(dates.len());
-    signals.actions[index][0] = Some(1);
+    signals.actions[index][0] = Some(Action::Report(1));
     let original = simulate(&market, &mut Sizing::default(), &signals, None).unwrap();
     let direction = std::array::from_fn(|leg| i8::from(leg == 0));
     let expected = Sizing::default()
@@ -170,8 +170,8 @@ fn one_trade_hand_calc_uses_fix_pnl_carry_markup_spread_and_fixed_notional_t5() 
     market.legs[5][0].fix = Some(fix(101.0, 0.01, jpy_carry));
     market.legs[6][0].fix = Some(fix(102.0, 102.0 / 101.0 - 1.0, (0.0, 0.0)));
     let mut signals = empty_schedule(7);
-    signals.actions[0][0] = Some(-1);
-    signals.actions[3][0] = Some(0);
+    signals.actions[0][0] = Some(Action::Report(-1));
+    signals.actions[3][0] = Some(Action::Exit);
 
     let account = simulate(&market, &mut Sizing::default(), &signals, None).unwrap();
     let entry = 0.001 / 100.0;
@@ -201,8 +201,8 @@ fn fixed_notional_holds_until_next_action_and_bust_stops() {
         legs[0].rates_ready = true;
     }
     let mut signals = empty_schedule(5);
-    signals.actions[0][0] = Some(1);
-    signals.actions[2][0] = Some(1);
+    signals.actions[0][0] = Some(Action::Report(1));
+    signals.actions[2][0] = Some(Action::Report(1));
     let run = simulate(&market, &mut Sizing::default(), &signals, None).unwrap();
     let previous = 1.0 - 0.001 / 100.0 * 2.0;
     near(run.days[2].after, 0.04 / previous);
@@ -307,7 +307,7 @@ fn no_edge_and_planted_edge_are_distinguished_g1_g3() {
         let noise = if rng % 2 == 0 { 0.004 } else { -0.004 };
         let signal = |i| if i / 7 % 2 == 0 { 1 } else { -1 };
         if i >= start && i % 7 == 0 {
-            signals.actions[i][0] = Some(signal(i));
+            signals.actions[i][0] = Some(Action::Report(signal(i)));
         }
         let premium = if i >= start + 9 {
             0.001 * f64::from(signal(i - 2))
@@ -351,7 +351,7 @@ fn dev_starts_flat_and_benchmark_carries_last_joint_value() {
     near(market.baseline(market.start).unwrap(), 375.0 / 200.0);
     near(market.baseline(2).unwrap(), 1.0);
     let mut signals = empty_schedule(4);
-    signals.actions[0][0] = Some(1);
+    signals.actions[0][0] = Some(Action::Report(1));
     assert!(
         simulate(&market, &mut Sizing::default(), &signals, None)
             .unwrap()
@@ -359,4 +359,31 @@ fn dev_starts_flat_and_benchmark_carries_last_joint_value() {
             .iter()
             .all(|day| day.after == 0.0)
     );
+}
+
+#[test]
+fn circular_shift_wraps_signal_days_and_skips_inactive_destinations() {
+    let n = 6;
+    let row = LegDay {
+        fix: Some(fix(100.0, 0.01, (0.0, 0.0))),
+        sigma: Some(0.30),
+        rates_ready: true,
+    };
+    let market = Market {
+        dates: days(DEV_START, n),
+        start: 1,
+        legs: vec![[row; LEGS]; n],
+        baseline: vec![],
+    };
+    let mut s = empty_schedule(n);
+    s.actions[1][0] = Some(Action::Report(1));
+    s.actions[4][0] = Some(Action::Report(-1));
+    s.active[3][0] = false;
+    let shifted = simulate(&market, &mut Sizing::default(), &s, Some(2)).unwrap();
+    assert_eq!(shifted.skipped, 1);
+    assert_eq!(shifted.days[0].after, 0.0);
+    near(shifted.days[1].after, -0.001 / 100.0);
+    near(shifted.days[2].before, -0.01 / (1.0 - 0.001 / 100.0));
+    assert_eq!(shifted.days[4].after, 0.0);
+    assert_eq!(shifted.fills, 2);
 }
