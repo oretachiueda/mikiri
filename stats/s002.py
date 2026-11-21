@@ -622,3 +622,46 @@ def shifted_actions(
             leverage[leg] = sizes[leg]
         result.append((day, fills, directions, leverage))
     return result
+
+
+def judgment_gates(
+    w_dev: float,
+    b_dev: float,
+    w_c: float,
+    b_c: float,
+    psr: float,
+    dsr: float,
+    shifted_srs: Sequence[float],
+    actual_sr: float,
+) -> dict[str, bool]:
+    if len(shifted_srs) != 1000 or any(
+        not math.isfinite(value) for value in shifted_srs
+    ):
+        raise ValueError("D requires 1,000 finite shifted Sharpe ratios")
+    return {
+        "A": w_dev > b_dev,
+        "B1": psr >= 1 - 0.05 / 276,
+        "B2": dsr >= 0.95,
+        "C": w_c > b_c,
+        "D": sum(value < actual_sr for value in shifted_srs) >= 950,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="S002 dev computation")
+    parser.add_argument("--cot", required=True, type=Path)
+    parser.add_argument("--fred", required=True, type=Path)
+    parser.add_argument("--spy", required=True, type=Path)
+    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--holdout", action="store_true")
+    args = parser.parse_args(argv)
+    if args.holdout:
+        parser.error("holdout is not implemented and cannot be run")
+    parser.error("S002 dev judgment and output pipeline is not implemented")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

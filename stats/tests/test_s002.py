@@ -469,3 +469,37 @@ def test_shifted_actions_recompute_size_and_inactive_cash():
     assert result[0][3]["JPY"] > 0
     later = shifted_actions("lvl-b0-h1-jpy", raw, 40, days, reports, prices, rates)
     assert later[0][2]["JPY"] == 0
+
+
+def test_cli_refuses_holdout_and_unfinished_dev(tmp_path, capsys):
+    from s002 import main
+
+    args = [
+        "--cot",
+        str(tmp_path),
+        "--fred",
+        str(tmp_path),
+        "--spy",
+        str(tmp_path),
+        "--out",
+        str(tmp_path),
+    ]
+    with pytest.raises(SystemExit):
+        main([*args, "--holdout"])
+    assert "holdout is not implemented" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(args)
+    assert "pipeline is not implemented" in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
+
+
+def test_judgment_gates_and_d_threshold():
+    from s002 import judgment_gates
+
+    values = [0.0] * 950 + [1.0] * 50
+    assert all(judgment_gates(2.0, 1.0, 2.0, 1.0, 1.0, 0.95, values, 1.0).values())
+    assert not judgment_gates(
+        2.0, 1.0, 2.0, 1.0, 1.0, 0.95, [0.0] * 949 + [1.0] * 51, 1.0
+    )["D"]
+    with pytest.raises(ValueError, match="1,000"):
+        judgment_gates(2.0, 1.0, 2.0, 1.0, 1.0, 1.0, values[:-1], 1.0)
