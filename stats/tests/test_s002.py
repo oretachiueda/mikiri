@@ -471,7 +471,7 @@ def test_shifted_actions_recompute_size_and_inactive_cash():
     assert later[0][2]["JPY"] == 0
 
 
-def test_cli_refuses_holdout_and_unfinished_dev(tmp_path, capsys):
+def test_cli_refuses_holdout_and_missing_inputs(tmp_path, capsys):
     from s002 import main
 
     args = [
@@ -487,9 +487,8 @@ def test_cli_refuses_holdout_and_unfinished_dev(tmp_path, capsys):
     with pytest.raises(SystemExit):
         main([*args, "--holdout"])
     assert "holdout is not implemented" in capsys.readouterr().err
-    with pytest.raises(SystemExit):
+    with pytest.raises(ValueError, match="no COT zip files"):
         main(args)
-    assert "pipeline is not implemented" in capsys.readouterr().err
     assert not list(tmp_path.iterdir())
 
 
@@ -586,3 +585,67 @@ def test_load_inputs_hashes_all_synthetic_sources(tmp_path):
     assert len(prices) == 8 and len(rates) == 9 and spy_values[date(2020, 1, 1)] == 100
     assert len(hashes) == 19
     assert hashes[str(spy)] == hashlib.sha256(spy.read_bytes()).hexdigest()
+
+
+def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
+    import csv
+    import json
+    import math
+    from datetime import date, timedelta
+
+    import s002
+
+    cot, fred, out = (tmp_path / name for name in ("cot", "fred", "out"))
+    cot.mkdir()
+    fred.mkdir()
+    first = date(1992, 10, 6)
+    report_days = [first + timedelta(weeks=i) for i in range(180)]
+    report_days += [date(2019, 10, 1) + timedelta(weeks=i) for i in range(20)]
+    rows = [
+        (leg, str(day), code, 1000, 1000 + ((i % 9) - 4) * 50)
+        for i, day in enumerate(report_days)
+        for code, leg in s002.CODES.items()
+    ]
+    write_cot(cot / "synthetic.zip", rows)
+    days = [date(1995, 10, 1) + timedelta(days=i) for i in range(260)]
+    days += [date(2019, 10, 1) + timedelta(days=i) for i in range(140)]
+    for n, name in enumerate(s002.FX):
+        with (fred / f"{name}.csv").open("w", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["observation_date", name])
+            writer.writerows(
+                (d, 100 * math.exp(i * 0.0001 + 0.003 * math.sin(i / (3 + n))))
+                for i, d in enumerate(days)
+            )
+    for code in ("US", *s002.RATE_CODES.values()):
+        name = f"IRSTCI01{code}M156N"
+        (fred / f"{name}.csv").write_text(f"observation_date,{name}\n1995-01-01,2\n")
+    spy = tmp_path / "spy.json"
+    spy.write_text(
+        json.dumps(
+            [{"date": str(d), "adjClose": 100 + i / 10} for i, d in enumerate(days)]
+        )
+    )
+    monkeypatch.setattr(s002, "d_control", lambda *args: (950, list(range(10))))
+    assert (
+        s002.main(
+            [
+                "--cot",
+                str(cot),
+                "--fred",
+                str(fred),
+                "--spy",
+                str(spy),
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
+    with (out / "results.csv").open() as stream:
+        results = list(csv.DictReader(stream))
+    summary = json.loads((out / "summary.json").read_text())
+    assert len(results) == 24
+    assert set(summary["gates"]) == {"A", "B1", "B2", "C", "D"}
+    assert summary["winner"] in {row["config"] for row in results}
+    assert len(summary["input_sha256"]) == 19

@@ -401,6 +401,8 @@ def simulate_returns(
     rates: Mapping[str, Mapping[date, float | None]],
     start: date = date(1996, 1, 2),
     tax: bool = False,
+    costs: bool = True,
+    details: dict[str, float] | None = None,
 ) -> list[tuple[date, float, float]]:
     from h005 import TaxLedger
 
@@ -418,6 +420,8 @@ def simulate_returns(
     positions = {leg: 0.0 for leg in prices}
     previous_fix: dict[str, tuple[date, float]] = {}
     equity = 1.0
+    peak = 1.0
+    trades = max_gross = max_dd = 0.0
     result = []
     active_calendar = [day for day in calendar if day >= start]
     for i, day in enumerate(active_calendar):
@@ -440,16 +444,20 @@ def simulate_returns(
                         * (
                             rate_for_day(rates[held], accrual_day)
                             - rate_for_day(rates[sold], accrual_day)
-                            - (0.02 if leg == "MXN" else 0.0135)
+                            - ((0.02 if leg == "MXN" else 0.0135) if costs else 0.0)
                         )
                         / 365
                     )
             if leg in fills.get(day, {}):
                 q, leverage = fills[day][leg]
                 new_notional = q * leverage * equity
-                pnl -= SPREAD[leg] / (2 * price) * abs(new_notional - notional)
+                if new_notional != notional:
+                    trades += 1
+                if costs:
+                    pnl -= SPREAD[leg] / (2 * price) * abs(new_notional - notional)
                 positions[leg] = new_notional
             previous_fix[leg] = (day, price)
+        max_gross = max(max_gross, sum(abs(v) for v in positions.values()) / equity)
         daily_return = pnl / equity
         equity += pnl
         if not math.isfinite(equity) or equity <= 0:
@@ -462,7 +470,11 @@ def simulate_returns(
             if equity <= 0:
                 raise ValueError(f"bust on {day}")
             year_start = equity
+        peak = max(peak, equity)
+        max_dd = max(max_dd, 1 - equity / peak)
         result.append((day, daily_return, equity))
+    if details is not None:
+        details.update(trades=trades, max_gross=max_gross, max_dd=max_dd)
     return result
 
 
@@ -582,6 +594,7 @@ def shifted_actions(
     reports: dict[str, list[tuple[date, float]]],
     prices: Mapping[str, Mapping[date, float | None]],
     rates: Mapping[str, Mapping[date, float | None]],
+    market_calendar: list[date] | None = None,
 ) -> list[tuple[date, dict[str, date | None], dict[str, int], dict[str, float]]]:
     signal, _, _, universe = config.split("-")
     legs = ("JPY",) if universe == "jpy" else LEGS
@@ -592,7 +605,9 @@ def shifted_actions(
         history = []
         for asof, _ in rows:
             try:
-                public, usable = public_and_signal(asof, calendar)
+                public, usable = public_and_signal(
+                    asof, market_calendar if market_calendar is not None else calendar
+                )
             except ValueError:
                 continue
             if usable is not None:
@@ -638,12 +653,20 @@ def d_control(
     prices: Mapping[str, Mapping[date, float | None]],
     rates: Mapping[str, Mapping[date, float | None]],
     actual_sr: float,
+    market_calendar: list[date] | None = None,
 ) -> tuple[int, list[int]]:
     offsets = d_offsets(len(calendar))
     count = 0
     for offset in offsets:
         actions = shifted_actions(
-            config, raw_actions, offset, calendar, reports, prices, rates
+            config,
+            raw_actions,
+            offset,
+            calendar,
+            reports,
+            prices,
+            rates,
+            market_calendar,
         )
         path = simulate_returns(calendar, actions, prices, rates, calendar[0])
         count += sharpe([daily for _, daily, _ in path]) < actual_sr
@@ -740,6 +763,117 @@ def load_inputs(
     return reports, prices, rates, spy_values, hashes
 
 
+def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
+    import itertools
+    import subprocess
+
+    reports, prices, rates, spy_values, hashes = load_inputs(cot, fred, spy)
+    market_calendar = sorted(
+        {
+            day
+            for series in prices.values()
+            for day, value in series.items()
+            if value is not None
+        }
+    )
+    calendar = [day for day in market_calendar if date(1996, 1, 2) <= day <= CUTOFF]
+    if not calendar or calendar[0] != date(1996, 1, 2):
+        raise ValueError("dev calendar must start 1996-01-02")
+    c_index = bisect.bisect_left(calendar, date(2019, 11, 1))
+    if c_index >= len(calendar):
+        raise ValueError("missing C calendar")
+    configs = [
+        "-".join(parts)
+        for parts in itertools.product(
+            ("lvl", "z52", "z156"), ("b0", "b1"), ("h1", "h2"), ("jpy", "fx8")
+        )
+    ]
+    paths: dict[str, list[float]] = {}
+    wealth: dict[str, tuple[float, float]] = {}
+    rows = []
+    for config in configs:
+        actions = signals(config, reports, market_calendar, prices, rates)
+        stats: dict[str, float] = {}
+        dev = simulate_returns(calendar, actions, prices, rates, details=stats)
+        pre = simulate_returns(calendar, actions, prices, rates, costs=False)
+        post_tax = simulate_returns(calendar, actions, prices, rates, tax=True)
+        returns = [r for _, r, _ in dev]
+        paths[config] = returns
+        wealth[config] = (
+            post_tax[-1][2],
+            tax_wealth(calendar[c_index:], returns[c_index:]),
+        )
+        years = (calendar[-1] - calendar[0]).days / 365.25
+        rows.append(
+            {
+                "config": config,
+                "sr_after": sharpe(returns),
+                "sr_before": sharpe([r for _, r, _ in pre]),
+                "trades_per_year": stats["trades"] / years,
+                "max_gross_L": stats["max_gross"],
+                "max_dd": stats["max_dd"],
+                "psr": probability_sharpe(returns),
+            }
+        )
+    b_dev = benchmark_wealth(calendar, spy_values, prices["JPY"])
+    b_c = benchmark_wealth(calendar[c_index:], spy_values, prices["JPY"])
+    winner, gates, values = dev_judgment(paths, wealth, b_dev, b_c)
+    raw = signals(winner, reports, market_calendar, prices, rates, raw=True)
+    actual_sr = sharpe(paths[winner])
+    count, first = d_control(
+        winner, raw, calendar, reports, prices, rates, actual_sr, market_calendar
+    )
+    gates["D"] = count >= 950
+    output_values: dict[str, object] = dict(values)
+    output_values.update(d_count_below=count, d_offsets_first10=first)
+    try:
+        root = Path(__file__).resolve().parent.parent
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout
+        commit = (
+            None
+            if dirty
+            else subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+        )
+    except (OSError, subprocess.CalledProcessError):
+        commit = None
+    scores = [sharpe(path) for path in paths.values()]
+    summary = {
+        "T": len(calendar),
+        "dev_start": calendar[0].isoformat(),
+        "dev_end": calendar[-1].isoformat(),
+        "winner": winner,
+        "winner_sr_after_annual": actual_sr,
+        "gates": gates,
+        "values": output_values,
+        "single_trial_psr": values["psr"],
+        "single_trial_bar_pass": values["psr"] >= 0.95,
+        "median_sr_after": statistics.median(scores),
+        "max_sr_after": max(scores),
+        "input_sha256": hashes,
+        "code": commit,
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    with (out / "results.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    (out / "summary.json").write_text(
+        json.dumps(summary, indent=2, allow_nan=False) + "\n"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -752,8 +886,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.holdout:
         parser.error("holdout is not implemented and cannot be run")
-    parser.error("S002 dev judgment and output pipeline is not implemented")
-    return 2
+    run_dev(args.cot, args.fred, args.spy, args.out)
+    return 0
 
 
 if __name__ == "__main__":
