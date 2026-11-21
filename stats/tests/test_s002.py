@@ -691,3 +691,24 @@ def test_fx8_sizes_only_legs_acting_on_the_day(monkeypatch):
     eur_day = date(2020, 3, 17)
     assert dict(seen)[eur_day] == {"EUR": 1}
     assert next(action for action in actions if action[0] == eur_day)[2] == {"EUR": 1}
+
+
+def test_entry_count_and_target_gross_at_fills():
+    from datetime import date, timedelta
+
+    from s002 import simulate_returns
+
+    begin = date(2020, 1, 1)
+    days = [begin + timedelta(days=i) for i in range(6)]
+    prices = {"JPY": dict.fromkeys(days, 100.0)}
+    rates = {"JPY": {date(2019, 1, 1): 0.0}, "USD": {date(2019, 1, 1): 0.0}}
+    actions = [
+        (days[i], {"JPY": days[i + 1]}, {"JPY": q}, {"JPY": size})
+        for i, (q, size) in enumerate([(1, 1.0), (1, 3.0), (-1, 2.0), (0, 0.0)])
+    ]
+    details = {}
+    path = simulate_returns(days, actions, prices, rates, start=begin, details=details)
+    assert details["trades"] == 2
+    assert details["max_gross"] == 3
+    assert details["max_dd"] == pytest.approx(1 - min(row[2] for row in path))
+    assert details["max_dd"] > 0

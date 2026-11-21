@@ -419,6 +419,7 @@ def simulate_returns(
                     raise ValueError("fill must follow signal")
                 fills.setdefault(fill_day, {})[leg] = (directions[leg], sizes[leg])
     positions = {leg: 0.0 for leg in prices}
+    target_leverage = dict.fromkeys(prices, 0.0)
     previous_fix: dict[str, tuple[date, float]] = {}
     equity = 1.0
     peak = 1.0
@@ -452,13 +453,16 @@ def simulate_returns(
             if leg in fills.get(day, {}):
                 q, leverage = fills[day][leg]
                 new_notional = q * leverage * equity
-                if new_notional != notional:
+                if new_notional and (not notional or new_notional * notional < 0):
                     trades += 1
+                target_leverage[leg] = q * leverage
+                max_gross = max(
+                    max_gross, sum(abs(v) for v in target_leverage.values())
+                )
                 if costs:
                     pnl -= SPREAD[leg] / (2 * price) * abs(new_notional - notional)
                 positions[leg] = new_notional
             previous_fix[leg] = (day, price)
-        max_gross = max(max_gross, sum(abs(v) for v in positions.values()) / equity)
         daily_return = pnl / equity
         equity += pnl
         if not math.isfinite(equity) or equity <= 0:
@@ -808,7 +812,7 @@ def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
             post_tax[-1][2],
             tax_wealth(calendar[c_index:], returns[c_index:]),
         )
-        years = (calendar[-1] - calendar[0]).days / 365.25
+        years = len(calendar) / 252
         rows.append(
             {
                 "config": config,
