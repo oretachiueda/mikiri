@@ -172,11 +172,7 @@ pub(super) fn schedule(
         let mut expires = None;
         let mut qualified = false;
         let mut expired = false;
-        let mut direction = 0;
         for (index, &day) in dates.iter().enumerate() {
-            if index == start {
-                direction = 0;
-            }
             if publications.contains_key(&index) {
                 expires = Some(day.checked_add(Span::new().days(14))?);
             }
@@ -193,8 +189,6 @@ pub(super) fn schedule(
                             Some(score) => Action::Report(config.quote_direction(leg, score)),
                             None => Action::Exit,
                         });
-                    } else if !qualified && action.map_or(direction, Action::direction) != 0 {
-                        action = Some(Action::Exit);
                     }
                 }
             }
@@ -205,9 +199,6 @@ pub(super) fn schedule(
                 expired = true;
             }
             if index >= start {
-                if let Some(next) = action {
-                    direction = next.direction();
-                }
                 schedule.actions[index][leg] = action;
             }
             schedule.cot_ready[index][leg] = qualified;
@@ -374,6 +365,28 @@ mod tests {
         assert_eq!(s.actions[(54 + 1) * 7][0], Some(Action::Exit));
         assert!(!s.cot_ready[(104 + 1) * 7][0]);
         assert_eq!(s.actions[(105 + 1) * 7][0], Some(Action::Report(-1)));
+    }
+
+    #[test]
+    fn h2_does_not_place_an_order_on_an_odd_incomplete_report() {
+        let start = date(1999, 1, 5);
+        let dates = days(start, start.checked_add(Span::new().days(58 * 7)).unwrap());
+        let reports = reports(
+            0,
+            (0..58)
+                .filter(|&slot| slot != 54)
+                .map(|slot| report(dates[slot * 7], slot, slot as f64 / 58.0))
+                .collect(),
+        );
+        let config = Config {
+            signal: Signal::Z52,
+            even: true,
+            ..Config::all().next().unwrap()
+        };
+        let s = schedule(&dates, &reports, config, 0).unwrap();
+        assert_eq!(s.actions[(52 + 1) * 7][0], Some(Action::Report(-1)));
+        assert_eq!(s.actions[(55 + 1) * 7][0], None);
+        assert_eq!(s.actions[(56 + 1) * 7][0], Some(Action::Exit));
     }
 
     #[test]

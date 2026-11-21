@@ -2,7 +2,7 @@ use super::{
     DEV_START, Result,
     input::{Inputs, LEGS, Series, days_between},
     mean, sample_variance,
-    signals::{Action, Schedule, usd_base},
+    signals::{Schedule, usd_base},
 };
 use crate::h005::core::Taxes;
 use jiff::{Span, civil::Date};
@@ -381,7 +381,6 @@ pub(super) fn simulate(
     };
     let mut tax = TaxAccount::default();
     let mut held = [0.0; LEGS];
-    let mut directions = [0; LEGS];
     let mut pending: [Vec<f64>; LEGS] = std::array::from_fn(|_| Vec::new());
     let offset = shift.unwrap_or(0);
     for index in market.start..market.dates.len() {
@@ -412,9 +411,7 @@ pub(super) fn simulate(
         if actions.iter().all(Option::is_none) {
             continue;
         }
-        let rebalance = actions
-            .iter()
-            .any(|action| matches!(action, Some(Action::Report(_))));
+        let mut directions = [0; LEGS];
         for (leg, action) in actions.into_iter().enumerate() {
             if let Some(action) = action {
                 let direction = action.direction();
@@ -424,18 +421,12 @@ pub(super) fn simulate(
                     && !(schedule.cot_ready[index][leg] && row.rates_ready && row.sigma.is_some());
                 account.skipped += usize::from(disabled);
                 directions[leg] = if disabled { 0 } else { direction };
-                if !rebalance {
-                    pending[leg].push(0.0);
-                }
             }
-        }
-        if !rebalance {
-            continue;
         }
         let targets = sizing.targets(market, index, directions)?;
         account.max_gross = account.max_gross.max(targets.iter().map(|x| x.abs()).sum());
         for (leg, (action, target)) in actions.into_iter().zip(targets).enumerate() {
-            if action.is_some() || directions[leg] != 0 {
+            if action.is_some() {
                 pending[leg].push(target);
             }
         }

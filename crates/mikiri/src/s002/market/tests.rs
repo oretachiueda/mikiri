@@ -1,7 +1,7 @@
 use super::*;
 use crate::s002::{
     input::Report,
-    signals::{Config, schedule},
+    signals::{Action, Config, schedule},
 };
 use jiff::civil::date;
 
@@ -488,4 +488,33 @@ fn circular_shift_executes_the_shifted_expiry_without_the_live_clock() {
     assert!(shifted.days[24].after > 0.0);
     assert!(shifted.days[36].after > 0.0);
     assert_eq!(shifted.days[37].after, 0.0);
+}
+
+#[test]
+fn staggered_report_sizes_and_fills_only_the_legs_acting_that_day() {
+    let n = 5;
+    let row = LegDay {
+        fix: Some(fix(100.0, 0.02, (0.0, 0.0))),
+        sigma: Some(0.30),
+        rates_ready: true,
+    };
+    let market = Market {
+        dates: days(DEV_START, n),
+        start: 0,
+        legs: vec![[row; LEGS]; n],
+        baseline: vec![],
+    };
+    let mut s = empty_schedule(n);
+    s.actions[0][0] = Some(Action::Report(1));
+    s.actions[1][1] = Some(Action::Report(1));
+    let run = simulate(&market, &mut Sizing::default(), &s, None).unwrap();
+    let after_jpy_entry = 1.0 - 0.001 / 100.0;
+    let eur_entry_cost = after_jpy_entry * 0.00002 / 100.0;
+    near(run.days[2].after, (0.02 - eur_entry_cost) / after_jpy_entry);
+    let after_eur_entry = after_jpy_entry + 0.02 - eur_entry_cost;
+    near(
+        run.days[3].before,
+        (0.02 + 0.02 * after_jpy_entry) / after_eur_entry,
+    );
+    assert_eq!(run.fills, 2);
 }
