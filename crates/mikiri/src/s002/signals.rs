@@ -173,11 +173,7 @@ pub(super) fn schedule(
         let mut published = BTreeMap::new();
         let mut expires = None;
         let mut qualified = false;
-        let mut expired = false;
         for (index, &day) in dates.iter().enumerate() {
-            if publications.contains_key(&index) {
-                expires = Some(day.checked_add(Span::new().days(14))?);
-            }
             let mut action = None;
             let mut action_report = None;
             let mut latest_report = None;
@@ -188,7 +184,6 @@ pub(super) fn schedule(
                     published.insert(report.slot, report.hp);
                     let score = config.signal.score(&published, report)?;
                     qualified = score.is_some();
-                    expired = false;
                     if !config.even || report.slot % 2 == 0 {
                         action_report = Some(report.as_of);
                         action = Some(match score {
@@ -198,11 +193,15 @@ pub(super) fn schedule(
                     }
                 }
             }
-            if expires.is_some_and(|expiry| day >= expiry) {
-                if !expired {
-                    action = Some(Action::Exit);
-                }
-                expired = true;
+            let publishes_today = publications.contains_key(&index);
+            if expires
+                .is_some_and(|deadline| day > deadline || (day == deadline && !publishes_today))
+            {
+                action = Some(Action::Exit);
+                expires = None;
+            }
+            if publishes_today {
+                expires = Some(day.checked_add(Span::new().days(14))?);
             }
             if index >= start {
                 schedule.actions[index][leg] = action;

@@ -678,3 +678,86 @@ fn trace_records_report_fill_carry_spread_and_unchanged_daily_returns() {
             .starts_with("1996-01-09,JPY,true,1996-01-02,false,0,")
     );
 }
+
+#[test]
+fn holiday_delayed_publication_triggers_stale_exit_before_reentry() {
+    let reports = [
+        Report {
+            as_of: date(2005, 8, 16),
+            slot: 671,
+            hp: 0.5,
+        },
+        Report {
+            as_of: date(2005, 8, 30),
+            slot: 673,
+            hp: 0.5,
+        },
+    ];
+    let row = LegDay {
+        fix: Some(fix(100.0, 0.0, (0.0, 0.0))),
+        sigma: Some(0.30),
+        rates_ready: true,
+    };
+    let config = Config::all().find(|c| c.id() == "lvl-b0-h1-fx8").unwrap();
+    let mut input = empty_inputs();
+    input.reports[6].extend(reports);
+
+    for holiday in [true, false] {
+        let dates = [
+            date(2005, 8, 22),
+            date(2005, 8, 23),
+            date(2005, 8, 24),
+            date(2005, 9, 2),
+            date(2005, 9, 5),
+            date(2005, 9, 6),
+            date(2005, 9, 7),
+            date(2005, 9, 8),
+        ]
+        .into_iter()
+        .filter(|&day| !holiday || day != date(2005, 9, 5))
+        .collect::<Vec<_>>();
+        let market = Market {
+            start: 0,
+            legs: vec![[row; LEGS]; dates.len()],
+            baseline: vec![],
+            dates,
+        };
+        let signals = schedule(&market.dates, &input.reports, config, 0).unwrap();
+        let mut trace = Vec::new();
+        simulate_with_trace(
+            &market,
+            &mut Sizing::default(),
+            &signals,
+            None,
+            Some(&mut trace),
+        )
+        .unwrap();
+        let at = |day| {
+            trace
+                .iter()
+                .find(|row| row.date == day && row.leg == 6)
+                .unwrap()
+        };
+
+        let sep6 = at(date(2005, 9, 6));
+        let sep7 = at(date(2005, 9, 7));
+        let sep8 = at(date(2005, 9, 8));
+        assert!(sep6.signal_day);
+        assert!(sep6.notional > 0.0);
+        if holiday {
+            assert_eq!(sep6.report_as_of, None);
+            assert!(sep7.fill);
+            assert_eq!(sep7.notional, 0.0);
+            assert!(sep7.signal_day);
+            assert_eq!(sep7.report_as_of, Some(reports[1].as_of));
+            assert!(sep8.fill);
+            assert!(sep8.notional > 0.0);
+        } else {
+            let deadline = at(date(2005, 9, 5));
+            assert!(!deadline.signal_day);
+            assert_eq!(sep6.report_as_of, Some(reports[1].as_of));
+            assert!(sep7.notional > 0.0);
+            assert!(!sep8.fill);
+        }
+    }
+}
