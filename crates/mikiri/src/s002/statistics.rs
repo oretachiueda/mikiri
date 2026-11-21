@@ -6,6 +6,10 @@ use super::{
 use std::{collections::BTreeSet, f64::consts};
 
 pub(super) const GRID_SIZE: usize = 24;
+#[allow(
+    clippy::approx_constant,
+    reason = "S002 preregisters ten decimal places"
+)]
 const EULER: f64 = 0.577_215_664_9;
 const D_COUNT: usize = 1_000;
 

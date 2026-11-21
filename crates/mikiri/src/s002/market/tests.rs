@@ -123,6 +123,24 @@ fn joint_sizing_uses_signed_todays_weights_and_complete_joint_days() {
         Sizing::default().targets(&market, 59, direction).unwrap(),
         [0.0; LEGS]
     );
+    let mut uncapped = Market {
+        dates: market.dates.clone(),
+        start: market.start,
+        legs: market.legs.clone(),
+        baseline: vec![],
+    };
+    for row in &mut uncapped.legs {
+        for leg in &mut row[..2] {
+            leg.sigma = leg.sigma.map(|sigma| 10.0 * sigma);
+            if let Some(fix) = &mut leg.fix {
+                fix.log_return = fix.log_return.map(|log| 10.0 * log);
+            }
+        }
+    }
+    let targets = Sizing::default().targets(&uncapped, 60, direction).unwrap();
+    let expected = 0.30 / 2.0_f64.sqrt() / uncapped.legs[60][0].sigma.unwrap();
+    near(targets[0], expected);
+    near(targets[1], -expected / 2.0);
     let mut market = market;
     market.legs[3][1].fix = None;
     assert_eq!(
@@ -304,7 +322,7 @@ fn no_edge_and_planted_edge_are_distinguished_g1_g3() {
         rng ^= rng << 13;
         rng ^= rng >> 7;
         rng ^= rng << 17;
-        let noise = if rng % 2 == 0 { 0.004 } else { -0.004 };
+        let noise = if rng.is_multiple_of(2) { 0.004 } else { -0.004 };
         let signal = |i| if i / 7 % 2 == 0 { 1 } else { -1 };
         if i >= start && i % 7 == 0 {
             signals.actions[i][0] = Some(Action::Report(signal(i)));
