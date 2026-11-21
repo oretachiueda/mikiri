@@ -32,6 +32,7 @@ fn empty_schedule(n: usize) -> Schedule {
     Schedule {
         actions: vec![[None; LEGS]; n],
         cot_ready: vec![[true; LEGS]; n],
+        report_as_of: vec![[None; LEGS]; n],
     }
 }
 
@@ -562,4 +563,98 @@ fn entries_and_gross_leverage_count_on_actual_fixes() {
     assert_eq!(run.entries, 4);
     assert_eq!(run.entries_per_year(), 4.0 * 252.0 / n as f64);
     near(run.max_gross, 3.0);
+}
+
+#[test]
+fn trace_records_report_fill_carry_spread_and_unchanged_daily_returns() {
+    let n = 31;
+    let row = LegDay {
+        fix: Some(fix(100.0, 0.02, (0.002, 0.001))),
+        sigma: Some(0.30),
+        rates_ready: true,
+    };
+    let market = Market {
+        dates: days(DEV_START, n),
+        start: 0,
+        legs: vec![[row; LEGS]; n],
+        baseline: vec![],
+    };
+    let mut input = empty_inputs();
+    input.reports[0].extend([
+        Report {
+            as_of: market.dates[0],
+            slot: 170,
+            hp: -0.5,
+        },
+        Report {
+            as_of: market.dates[7],
+            slot: 171,
+            hp: 0.5,
+        },
+    ]);
+    let config = Config::all()
+        .find(|config| config.id() == "lvl-b0-h2-jpy")
+        .unwrap();
+    let schedule = schedule(&market.dates, &input.reports, config, market.start).unwrap();
+    let mut trace = Vec::new();
+    let account = simulate_with_trace(
+        &market,
+        &mut Sizing::default(),
+        &schedule,
+        None,
+        Some(&mut trace),
+    )
+    .unwrap();
+    let normal = simulate(&market, &mut Sizing::default(), &schedule, None).unwrap();
+    assert_eq!(normal.days, account.days);
+    assert_eq!(trace.len(), 22);
+
+    let signal = &trace[0];
+    assert_eq!(signal.date, market.dates[7]);
+    assert!(signal.signal_day);
+    assert_eq!(signal.report_as_of, Some(DEV_START));
+    assert!(!signal.fill);
+    assert_eq!(signal.notional, 0.0);
+
+    let entry = &trace[1];
+    assert_eq!(entry.date, market.dates[8]);
+    assert!(entry.fill);
+    assert_eq!(entry.leverage, 1.0);
+    assert_eq!(entry.notional, 1.0);
+    assert_eq!(entry.prev_equity, 1.0);
+    near(entry.spread_cost_amount, 0.00001);
+    near(entry.leg_pnl, -0.00001);
+
+    let odd = &trace[7];
+    assert_eq!(odd.date, market.dates[14]);
+    assert_eq!(odd.report_as_of, Some(market.dates[7]));
+    assert!(!odd.signal_day);
+    assert!(!odd.fill);
+    assert_eq!(odd.notional, 1.0);
+    near(odd.carry_markup_amount, 0.001);
+    near(odd.leg_pnl, 0.021);
+    near(odd.daily_return, account.days[14].after);
+
+    let close = trace.last().unwrap();
+    assert_eq!(close.date, market.dates[28]);
+    assert!(close.fill);
+    assert_eq!(close.notional, 0.0);
+    near(close.spread_cost_amount, 0.00001);
+    near(close.carry_markup_amount, 0.001);
+
+    let mut csv = Vec::new();
+    super::super::trace::write_csv(&mut csv, &trace).unwrap();
+    let csv = String::from_utf8(csv).unwrap();
+    assert!(
+        csv.lines()
+            .next()
+            .unwrap()
+            .starts_with("date,leg,signal_day_flag,report_as_of,fill_flag,")
+    );
+    assert!(
+        csv.lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("1996-01-09,JPY,true,1996-01-02,false,0,")
+    );
 }

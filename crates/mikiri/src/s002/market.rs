@@ -3,6 +3,7 @@ use super::{
     input::{Inputs, LEGS, Series, days_between},
     mean, sample_variance,
     signals::{Schedule, usd_base},
+    trace::TraceRow,
 };
 use crate::h005::core::Taxes;
 use jiff::{Span, civil::Date};
@@ -339,36 +340,49 @@ pub(super) fn retax(dates: &[Date], days: &[Daily]) -> Result<f64> {
     Ok(equity)
 }
 
+#[derive(Default)]
+struct LegPnl {
+    before: f64,
+    after: f64,
+    entries: usize,
+    carry_markup_amount: f64,
+    spread_cost_amount: f64,
+    filled: bool,
+}
+
 fn pnl(
     leg: usize,
     fix: Fix,
     position: f64,
     previous_equity: f64,
     orders: &mut Vec<f64>,
-) -> Result<(f64, f64, usize)> {
-    let mut before = 0.0;
-    let mut after = 0.0;
-    let mut entries = 0;
+) -> Result<LegPnl> {
+    let mut pnl = LegPnl::default();
     if position != 0.0 {
         let (carry, markup) = fix.carry.ok_or("missing rate while holding a position")?;
-        before = position * (fix.spot + carry);
-        after = before - position.abs() * markup;
+        let markup_amount = position.abs() * markup;
+        pnl.before = position * (fix.spot + carry);
+        pnl.after = pnl.before - markup_amount;
+        pnl.carry_markup_amount = position * carry - markup_amount;
     }
     let mut notional = position;
     for leverage in orders.drain(..) {
         let next = leverage * previous_equity;
         let delta = (next - notional).abs();
         if delta > 0.0 {
-            after -= 0.5 * ROUND_TRIP[leg] / fix.price * delta;
+            let spread = 0.5 * ROUND_TRIP[leg] / fix.price * delta;
+            pnl.after -= spread;
+            pnl.spread_cost_amount += spread;
+            pnl.filled = true;
             if next != 0.0
                 && (notional == 0.0 || next.is_sign_positive() != notional.is_sign_positive())
             {
-                entries += 1;
+                pnl.entries += 1;
             }
         }
         notional = next;
     }
-    Ok((before, after, entries))
+    Ok(pnl)
 }
 
 pub(super) fn simulate(
@@ -376,6 +390,16 @@ pub(super) fn simulate(
     sizing: &mut Sizing,
     schedule: &Schedule,
     shift: Option<usize>,
+) -> Result<Account> {
+    simulate_with_trace(market, sizing, schedule, shift, None)
+}
+
+pub(super) fn simulate_with_trace(
+    market: &Market,
+    sizing: &mut Sizing,
+    schedule: &Schedule,
+    shift: Option<usize>,
+    mut trace: Option<&mut Vec<TraceRow>>,
 ) -> Result<Account> {
     let t = market.dates.len() - market.start;
     let mut account = Account {
@@ -387,6 +411,7 @@ pub(super) fn simulate(
     };
     let mut tax = TaxAccount::default();
     let mut held = [0.0; LEGS];
+    let mut held_leverage = [0.0; LEGS];
     let mut pending: [Vec<f64>; LEGS] = std::array::from_fn(|_| Vec::new());
     let offset = shift.unwrap_or(0);
     for index in market.start..market.dates.len() {
@@ -394,29 +419,70 @@ pub(super) fn simulate(
         let mut after = 0.0;
         let previous_equity = account.equity;
         let mut gross_at_fixes = 0.0;
+        let source = market.start + (index - market.start + t - offset) % t;
+        let actions = schedule.actions[source];
+        let trace_start = trace.as_ref().map_or(0, |rows| rows.len());
         for (leg, row) in market.legs[index].iter().enumerate() {
+            let previous_notional = held[leg];
+            let mut leg_pnl = LegPnl::default();
             if let Some(fix) = row.fix {
                 let filled_leverage = pending[leg].last().copied();
-                let (gross, net, entries) =
-                    pnl(leg, fix, held[leg], previous_equity, &mut pending[leg])?;
-                before += gross;
-                after += net;
-                account.entries += entries;
+                leg_pnl = pnl(
+                    leg,
+                    fix,
+                    previous_notional,
+                    previous_equity,
+                    &mut pending[leg],
+                )?;
+                before += leg_pnl.before;
+                after += leg_pnl.after;
+                account.entries += leg_pnl.entries;
                 if let Some(leverage) = filled_leverage {
                     gross_at_fixes += leverage.abs();
                     held[leg] = leverage * previous_equity;
+                    held_leverage[leg] = leverage.abs();
+                }
+            }
+            if let Some(trace) = trace.as_deref_mut() {
+                let signal_day = actions[leg].is_some();
+                let report_as_of = schedule.report_as_of[source][leg];
+                if previous_notional != 0.0
+                    || held[leg] != 0.0
+                    || leg_pnl.filled
+                    || signal_day
+                    || report_as_of.is_some()
+                {
+                    trace.push(TraceRow {
+                        date: market.dates[index],
+                        leg,
+                        signal_day,
+                        report_as_of,
+                        fill: leg_pnl.filled,
+                        leverage: held_leverage[leg],
+                        notional: held[leg],
+                        prev_equity: previous_equity,
+                        spot_ret: row.fix.map_or(0.0, |fix| fix.spot),
+                        carry_markup_amount: leg_pnl.carry_markup_amount,
+                        spread_cost_amount: leg_pnl.spread_cost_amount,
+                        leg_pnl: leg_pnl.after,
+                        daily_return: 0.0,
+                    });
                 }
             }
         }
         account.max_gross = account.max_gross.max(gross_at_fixes);
+        let daily_return = after / previous_equity;
+        if let Some(trace) = trace.as_deref_mut() {
+            for row in &mut trace[trace_start..] {
+                row.daily_return = daily_return;
+            }
+        }
         account.days.push(Daily {
             before: before / previous_equity,
-            after: after / previous_equity,
+            after: daily_return,
         });
         account.equity = tax.apply(&market.dates, index, previous_equity, after)?;
 
-        let source = market.start + (index - market.start + t - offset) % t;
-        let actions = schedule.actions[source];
         if actions.iter().all(Option::is_none) {
             continue;
         }

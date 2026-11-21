@@ -2,7 +2,7 @@
 
 use crate::h001::{output_hashes, publish_output_directory};
 use jiff::civil::{Date, date};
-use market::{Market, Sizing, retax, simulate};
+use market::{Market, Sizing, retax, simulate, simulate_with_trace};
 use serde_json::json;
 use signals::{Config, schedule};
 use statistics::{GRID_SIZE, after, annual, expected_max_sr, max_drawdown, offsets, psr, sr};
@@ -19,6 +19,7 @@ mod input;
 mod market;
 mod signals;
 mod statistics;
+mod trace;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const DEV_START: Date = date(1996, 1, 2);
@@ -124,7 +125,20 @@ fn write_daily_csv(mut csv: impl Write, dates: &[Date], rows: &[Row]) -> Result<
 }
 
 /// Run S002 dev, recent-window tax replay, and the circular-shift gate.
-pub fn run(cot: &Path, fred: &Path, spy: &Path, out: &Path) -> Result<String> {
+pub fn run(
+    cot: &Path,
+    fred: &Path,
+    spy: &Path,
+    out: &Path,
+    trace_id: Option<&str>,
+) -> Result<String> {
+    let trace_config = trace_id
+        .map(|id| {
+            Config::all()
+                .find(|config| config.id() == id)
+                .ok_or("unknown S002 trace configuration")
+        })
+        .transpose()?;
     let input = input::read(cot, fred, spy)?;
     let market = Market::new(&input)?;
     let dates = &market.dates[market.start..];
@@ -143,8 +157,8 @@ pub fn run(cot: &Path, fred: &Path, spy: &Path, out: &Path) -> Result<String> {
     sr_grid.sort_unstable_by(f64::total_cmp);
     let median = annual((sr_grid[GRID_SIZE / 2 - 1] + sr_grid[GRID_SIZE / 2]) / 2.0);
     let sr0 = expected_max_sr(variance);
-    let schedule = schedule(&market.dates, &input.reports, winner.config, market.start)?;
-    let selected = simulate(&market, &mut sizing, &schedule, None)?;
+    let winner_schedule = schedule(&market.dates, &input.reports, winner.config, market.start)?;
+    let selected = simulate(&market, &mut sizing, &winner_schedule, None)?;
     let w_dev = selected.equity;
     let w_recent = retax(
         &market.dates[recent..],
@@ -154,11 +168,16 @@ pub fn run(cot: &Path, fred: &Path, spy: &Path, out: &Path) -> Result<String> {
     let mut below = 0;
     let mut skipped = 0;
     for &offset in &offsets {
-        let run = simulate(&market, &mut sizing, &schedule, Some(offset))
+        let run = simulate(&market, &mut sizing, &winner_schedule, Some(offset))
             .map_err(|error| format!("D offset {offset}: {error}"))?;
         let sr = sr(&after(&run)).map_err(|error| format!("D offset {offset}: {error}"))?;
         below += usize::from(sr < winner.sr_after_daily);
         skipped += run.skipped;
+    }
+    let mut trace_rows = Vec::new();
+    if let Some(config) = trace_config {
+        let schedule = schedule(&market.dates, &input.reports, config, market.start)?;
+        simulate_with_trace(&market, &mut sizing, &schedule, None, Some(&mut trace_rows))?;
     }
     let summary = json!({
         "T": dates.len(),
@@ -184,6 +203,10 @@ pub fn run(cot: &Path, fred: &Path, spy: &Path, out: &Path) -> Result<String> {
         "code": clean_commit(),
     });
     publish_output_directory(out, |dir| {
+        if let Some(config) = trace_config {
+            let file = File::create(dir.join(format!("trace-{}.csv", config.id())))?;
+            trace::write_csv(BufWriter::new(file), &trace_rows)?;
+        }
         write_daily_csv(
             BufWriter::new(File::create(dir.join("daily.csv"))?),
             dates,

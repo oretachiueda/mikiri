@@ -145,6 +145,7 @@ fn public_bound(as_of: Date) -> Result<Date> {
 pub(super) struct Schedule {
     pub actions: Vec<Actions>,
     pub cot_ready: Vec<[bool; LEGS]>,
+    pub report_as_of: Vec<[Option<Date>; LEGS]>,
 }
 
 pub(super) fn schedule(
@@ -156,6 +157,7 @@ pub(super) fn schedule(
     let mut schedule = Schedule {
         actions: vec![[None; LEGS]; dates.len()],
         cot_ready: vec![[false; LEGS]; dates.len()],
+        report_as_of: vec![[None; LEGS]; dates.len()],
     };
     for (leg, reports) in reports
         .iter()
@@ -177,14 +179,18 @@ pub(super) fn schedule(
                 expires = Some(day.checked_add(Span::new().days(14))?);
             }
             let mut action = None;
+            let mut action_report = None;
+            let mut latest_report = None;
             if let Some(batch) = index.checked_sub(1).and_then(|i| publications.get_mut(&i)) {
                 batch.sort_unstable_by_key(|report| report.as_of);
                 for &report in batch.iter() {
+                    latest_report = Some(report.as_of);
                     published.insert(report.slot, report.hp);
                     let score = config.signal.score(&published, report)?;
                     qualified = score.is_some();
                     expired = false;
                     if !config.even || report.slot % 2 == 0 {
+                        action_report = Some(report.as_of);
                         action = Some(match score {
                             Some(score) => Action::Report(config.quote_direction(leg, score)),
                             None => Action::Exit,
@@ -200,6 +206,7 @@ pub(super) fn schedule(
             }
             if index >= start {
                 schedule.actions[index][leg] = action;
+                schedule.report_as_of[index][leg] = action_report.or(latest_report);
             }
             schedule.cot_ready[index][leg] = qualified;
         }
