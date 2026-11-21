@@ -363,3 +363,44 @@ def test_spreads_and_flat_or_missing_fix_days():
     assert result[1][1] == pytest.approx(-0.00006 / 2)
     assert result[2][1] == 0
     assert result[3][1] == pytest.approx(-2 * 0.0135 / 365 / result[2][2])
+
+
+def test_tax_hand_calculation_and_expiration():
+    from datetime import date
+
+    from s002 import tax_wealth
+
+    days = [date(year, 12, 30) for year in range(2020, 2025)]
+    returns = [-0.1, -1 / 9, 0, 0, 0.5]
+    assert tax_wealth(days, returns) == pytest.approx(1.2 - 0.3 * 0.20315)
+    assert tax_wealth(days[:2], returns[:2]) == pytest.approx(0.8)
+
+
+def test_benchmark_forward_fill_and_restart():
+    from datetime import date
+
+    from s002 import benchmark_wealth
+
+    days = [date(2020, 1, i) for i in (2, 3, 4)]
+    spy = {days[0]: 100, days[1]: 120}
+    jpy = {days[0]: 100, days[1]: None, days[2]: 110}
+    assert benchmark_wealth(days, spy, jpy) == pytest.approx(1.32)
+    assert benchmark_wealth(days[1:], spy, jpy) == pytest.approx(1.1)
+
+
+def test_sharpe_psr_dsr_and_tie():
+    import math
+    import statistics
+
+    from s002 import deflated_sharpe, probability_sharpe, sharpe, winning_config
+
+    values = [-0.02, 0.01, 0.03, 0.04, -0.01]
+    assert sharpe(values) == pytest.approx(
+        math.sqrt(252) * statistics.mean(values) / statistics.stdev(values)
+    )
+    assert probability_sharpe(values) == pytest.approx(0.7817109871178746)
+    paths = {f"{i:02}": [x + i * 0.0001 for x in values] for i in range(24)}
+    dsr, sr0, variance = deflated_sharpe(paths["23"], list(paths.values()))
+    assert 0 < dsr < 1
+    assert sr0 > 0 and variance > 0
+    assert winning_config({"z": values, "a": values}) == "a"

@@ -445,3 +445,92 @@ def simulate_returns(
             raise ValueError(f"bust on {day}")
         result.append((day, daily_return, equity))
     return result
+
+
+def tax_wealth(days: list[date], returns: list[float]) -> float:
+    if len(days) != len(returns):
+        raise ValueError("calendar and returns differ in length")
+    equity = year_start = 1.0
+    losses: list[tuple[int, float]] = []
+    for i, (day, daily_return) in enumerate(zip(days, returns, strict=True)):
+        equity *= 1 + daily_return
+        if not math.isfinite(equity) or equity <= 0:
+            raise ValueError("bust")
+        if i + 1 == len(days) or days[i + 1].year != day.year:
+            income = equity - year_start
+            losses = [(year, amount) for year, amount in losses if day.year - year <= 3]
+            if income < 0:
+                losses.append((day.year, -income))
+            else:
+                remaining = []
+                for year, amount in losses:
+                    used = min(income, amount)
+                    income -= used
+                    if amount > used:
+                        remaining.append((year, amount - used))
+                losses = remaining
+                equity -= income * 0.20315
+            year_start = equity
+    return equity
+
+
+def benchmark_wealth(
+    days: list[date], spy: Mapping[date, float], jpy: Mapping[date, float | None]
+) -> float:
+    spy_rows = sorted(spy.items())
+    jpy_rows = sorted((day, value) for day, value in jpy.items() if value is not None)
+    levels = []
+    for day in (days[0], days[-1]):
+        si = bisect.bisect_right(spy_rows, (day, float("inf"))) - 1
+        ji = bisect.bisect_right(jpy_rows, (day, float("inf"))) - 1
+        if si < 0 or ji < 0:
+            raise ValueError("benchmark unavailable")
+        levels.append(spy_rows[si][1] * jpy_rows[ji][1])
+    return levels[1] / levels[0]
+
+
+def sharpe(returns: list[float]) -> float:
+    sd = statistics.stdev(returns)
+    if not math.isfinite(sd) or sd <= 0:
+        raise ValueError("invalid return standard deviation")
+    return statistics.mean(returns) / sd * math.sqrt(252)
+
+
+def probability_sharpe(returns: list[float], reference_daily: float = 0.0) -> float:
+    from statistics import NormalDist
+
+    n = len(returns)
+    daily = sharpe(returns) / math.sqrt(252)
+    mean = statistics.mean(returns)
+    m2 = sum((x - mean) ** 2 for x in returns) / n
+    skew = sum((x - mean) ** 3 for x in returns) / n / m2**1.5
+    kurtosis = sum((x - mean) ** 4 for x in returns) / n / m2**2
+    denominator = 1 - skew * daily + (kurtosis - 1) * daily**2 / 4
+    if denominator <= 0 or not math.isfinite(denominator):
+        raise ValueError("invalid PSR denominator")
+    return NormalDist().cdf(
+        (daily - reference_daily) * math.sqrt(n - 1) / math.sqrt(denominator)
+    )
+
+
+def deflated_sharpe(
+    winner: list[float], all_returns: list[list[float]]
+) -> tuple[float, float, float]:
+    from statistics import NormalDist
+
+    if len(all_returns) != 24:
+        raise ValueError("expected 24 configurations")
+    variance = statistics.variance(
+        sharpe(values) / math.sqrt(252) for values in all_returns
+    )
+    normal = NormalDist()
+    gamma = 0.5772156649
+    sr0 = math.sqrt(variance) * (
+        (1 - gamma) * normal.inv_cdf(1 - 1 / 24)
+        + gamma * normal.inv_cdf(1 - 1 / (24 * math.e))
+    )
+    return probability_sharpe(winner, sr0), sr0, variance
+
+
+def winning_config(paths: Mapping[str, list[float]]) -> str:
+    return min(paths, key=lambda name: (-sharpe(paths[name]), name))
