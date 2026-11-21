@@ -6,7 +6,7 @@ use super::{
 };
 use jiff::{
     Span,
-    civil::{Date, date},
+    civil::{Date, Weekday, date},
 };
 use std::collections::BTreeMap;
 
@@ -119,7 +119,12 @@ fn public_bound(as_of: Date) -> Result<Date> {
     } else if (date(2018, 12, 24)..=date(2019, 3, 12)).contains(&as_of) {
         date(2019, 3, 29)
     } else {
-        as_of.checked_add(Span::new().days(6))?
+        let delay = if as_of.weekday() == Weekday::Tuesday {
+            6
+        } else {
+            7
+        };
+        as_of.checked_add(Span::new().days(delay))?
     };
     Ok(date)
 }
@@ -235,6 +240,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
+    }
+
+    #[test]
+    fn non_tuesday_report_uses_seven_days_before_calendar_roll() {
+        let dates = [
+            date(1997, 12, 19),
+            date(1997, 12, 25),
+            date(1997, 12, 26),
+            date(1997, 12, 29),
+        ];
+        let data = reports(0, vec![report(dates[0], 271, 0.8)]);
+        let s = schedule(&dates, &data, Config::all().next().unwrap(), 0).unwrap();
+        assert_eq!(public_bound(dates[0]).unwrap(), dates[2]);
+        assert_eq!(s.actions[2][0], None);
+        assert_eq!(s.actions[3][0], Some(-1));
     }
 
     #[test]
