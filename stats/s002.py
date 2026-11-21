@@ -426,7 +426,7 @@ def simulate_returns(
     target_leverage = dict.fromkeys(prices, 0.0)
     previous_fix: dict[str, tuple[date, float]] = {}
     equity = 1.0
-    peak = 1.0
+    peak = pretax_equity = 1.0
     trades = max_gross = max_dd = 0.0
     result = []
     active_calendar = [day for day in calendar if day >= start]
@@ -541,8 +541,9 @@ def simulate_returns(
             if equity <= 0:
                 raise ValueError(f"bust on {day}")
             year_start = equity
-        peak = max(peak, equity)
-        max_dd = max(max_dd, 1 - equity / peak)
+        pretax_equity *= 1 + daily_return
+        peak = max(peak, pretax_equity)
+        max_dd = max(max_dd, 1 - pretax_equity / peak)
         result.append((day, daily_return, equity))
     if details is not None:
         details.update(trades=trades, max_gross=max_gross, max_dd=max_dd)
@@ -743,7 +744,7 @@ def d_control(
             rates,
             market_calendar,
         )
-        path = simulate_returns(calendar, actions, prices, rates, calendar[0])
+        path = simulate_returns(calendar, actions, prices, rates, calendar[0], tax=True)
         count += sharpe([daily for _, daily, _ in path]) < actual_sr
     return count, offsets[:10]
 
@@ -895,15 +896,15 @@ def run_dev(
             prices,
             rates,
             details=stats,
+            tax=True,
             trace=trace_rows if config == trace_config else None,
             trace_reports=trace_reports,
         )
-        pre = simulate_returns(calendar, actions, prices, rates, costs=False)
-        post_tax = simulate_returns(calendar, actions, prices, rates, tax=True)
+        pre = simulate_returns(calendar, actions, prices, rates, tax=True, costs=False)
         returns = [r for _, r, _ in dev]
         paths[config] = returns
         wealth[config] = (
-            post_tax[-1][2],
+            dev[-1][2],
             tax_wealth(calendar[c_index:], returns[c_index:]),
         )
         years = len(calendar) / 252

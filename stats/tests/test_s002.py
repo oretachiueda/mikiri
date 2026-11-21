@@ -559,6 +559,7 @@ def test_d_control_runs_all_shifted_paths(monkeypatch):
 
     offsets = list(range(1000))
     seen = []
+    tax_modes = []
     monkeypatch.setattr(s002, "d_offsets", lambda _: offsets)
     monkeypatch.setattr(
         s002,
@@ -566,12 +567,18 @@ def test_d_control_runs_all_shifted_paths(monkeypatch):
         lambda config, raw, offset, *args: seen.append(offset) or [],
     )
     monkeypatch.setattr(
-        s002, "simulate_returns", lambda *args: [(None, -0.01, 1.0), (None, 0.02, 1.0)]
+        s002,
+        "simulate_returns",
+        lambda *args, **kwargs: (
+            tax_modes.append(kwargs.get("tax"))
+            or [(None, -0.01, 1.0), (None, 0.02, 1.0)]
+        ),
     )
     count, first = s002.d_control(
         "lvl-b0-h1-jpy", [], [date(2020, 1, 1)], {}, {}, {}, 100.0
     )
     assert count == 1000 and seen == offsets and first == offsets[:10]
+    assert tax_modes == [True] * 1000
 
 
 def test_load_inputs_hashes_all_synthetic_sources(tmp_path):
@@ -639,6 +646,14 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
         )
     )
     monkeypatch.setattr(s002, "d_control", lambda *args: (950, list(range(10))))
+    simulate = s002.simulate_returns
+    tax_modes = []
+
+    def record_tax(*args, **kwargs):
+        tax_modes.append(kwargs.get("tax", False))
+        return simulate(*args, **kwargs)
+
+    monkeypatch.setattr(s002, "simulate_returns", record_tax)
     assert (
         s002.main(
             [
@@ -654,6 +669,7 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
         )
         == 0
     )
+    assert tax_modes and all(tax_modes)
     with (out / "results.csv").open() as stream:
         results = list(csv.DictReader(stream))
     summary = json.loads((out / "summary.json").read_text())
@@ -945,3 +961,34 @@ def test_h2_odd_report_resets_expiry_without_acting(monkeypatch):
     assert not any(day == date(1996, 4, 8) for day, *_ in actions)
     exit_action = next(row for row in actions if row[0] == date(1996, 4, 15))
     assert exit_action[2]["JPY"] == 0
+
+
+def test_tax_debit_changes_next_equity_but_not_held_notional():
+    from datetime import date
+
+    from s002 import simulate_returns
+
+    days = [
+        date(2020, 12, 29),
+        date(2020, 12, 30),
+        date(2020, 12, 31),
+        date(2021, 1, 1),
+        date(2021, 1, 2),
+    ]
+    prices = {"JPY": dict(zip(days, [100.0, 110.0, 121.0, 133.1, 146.41], strict=True))}
+    rates = {"JPY": {date(2020, 1, 1): 0.0}, "USD": {date(2020, 1, 1): 0.0}}
+    actions = [
+        (date(2020, 12, 28), {"JPY": days[0]}, {"JPY": 1}, {"JPY": 1.0}),
+        (days[2], {"JPY": days[3]}, {"JPY": 1}, {"JPY": 2.0}),
+    ]
+    trace = []
+    path = simulate_returns(
+        days, actions, prices, rates, days[0], tax=True, costs=False, trace=trace
+    )
+    after_tax = 1.2 - 0.2 * 0.20315
+    jan1 = next(row for row in trace if row["date"] == days[3])
+    assert path[2][2] == pytest.approx(after_tax)
+    assert jan1["prev_equity"] == pytest.approx(after_tax)
+    assert jan1["notional"] == pytest.approx(2 * after_tax)
+    assert path[3][1] == pytest.approx(0.1 / after_tax)
+    assert path[3][2] == pytest.approx(after_tax + 0.1)
