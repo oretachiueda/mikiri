@@ -561,3 +561,28 @@ def test_d_control_runs_all_shifted_paths(monkeypatch):
         "lvl-b0-h1-jpy", [], [date(2020, 1, 1)], {}, {}, {}, 100.0
     )
     assert count == 1000 and seen == offsets and first == offsets[:10]
+
+
+def test_load_inputs_hashes_all_synthetic_sources(tmp_path):
+    import hashlib
+    from datetime import date
+
+    from s002 import FX, RATE_CODES, load_inputs
+
+    cot = tmp_path / "cot"
+    fred = tmp_path / "fred"
+    cot.mkdir()
+    fred.mkdir()
+    write_cot(cot / "cot.zip", [("JPY", "2020-01-07", "097741", 1, 3)])
+    for name in (
+        *FX,
+        *(f"IRSTCI01{code}M156N" for code in ("US", *RATE_CODES.values())),
+    ):
+        (fred / f"{name}.csv").write_text(f"observation_date,{name}\n2020-01-01,1\n")
+    spy = tmp_path / "spy.json"
+    spy.write_text('[{"date":"2020-01-01T00:00:00Z","adjClose":100}]')
+    reports, prices, rates, spy_values, hashes = load_inputs(cot, fred, spy)
+    assert reports["JPY"] == [(date(2020, 1, 7), 0.5)]
+    assert len(prices) == 8 and len(rates) == 9 and spy_values[date(2020, 1, 1)] == 100
+    assert len(hashes) == 19
+    assert hashes[str(spy)] == hashlib.sha256(spy.read_bytes()).hexdigest()

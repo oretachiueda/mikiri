@@ -707,6 +707,39 @@ def judgment_gates(
     }
 
 
+def load_inputs(
+    cot: Path, fred: Path, spy: Path
+) -> tuple[
+    dict[str, list[tuple[date, float]]],
+    dict[str, dict[date, float | None]],
+    dict[str, dict[date, float | None]],
+    dict[date, float],
+    dict[str, str],
+]:
+    import hashlib
+
+    reports = read_cot(cot)
+    files = sorted(cot.glob("*.zip"))
+    if not files:
+        raise ValueError("no COT zip files")
+    prices = {}
+    for leg, series in zip(LEGS, FX, strict=True):
+        path = fred / f"{series}.csv"
+        files.append(path)
+        prices[leg] = read_fred(path)
+    rates = {}
+    for leg, code in {"USD": "US", **RATE_CODES}.items():
+        path = fred / f"IRSTCI01{code}M156N.csv"
+        files.append(path)
+        rates[leg] = read_fred(path)
+    files.append(spy)
+    spy_values = read_spy(spy)
+    hashes = {
+        str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files
+    }
+    return reports, prices, rates, spy_values, hashes
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
