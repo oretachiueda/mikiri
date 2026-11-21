@@ -351,7 +351,7 @@ fn no_edge_and_planted_edge_are_distinguished_g1_g3() {
 }
 
 #[test]
-fn dev_starts_flat_and_benchmark_carries_each_series_independently() {
+fn dev_starts_flat_and_benchmark_includes_first_day_with_independent_carry() {
     let mut input = empty_inputs();
     let dates = [
         date(1996, 1, 1),
@@ -366,8 +366,14 @@ fn dev_starts_flat_and_benchmark_carries_each_series_independently() {
         .extend([(dates[0], 2.0), (dates[2], 3.0), (dates[3], 4.0)]);
     let market = Market::new(&input).unwrap();
     assert_eq!(market.dates[market.start], DEV_START);
-    near(market.baseline(market.start).unwrap(), 500.0 / 190.0);
-    near(market.baseline(2).unwrap(), 500.0 / 375.0);
+    assert_eq!(
+        market.baseline,
+        [Some(200.0), Some(190.0), Some(375.0), Some(500.0)]
+    );
+    near(
+        market.benchmark_wealth(market.start).unwrap(),
+        500.0 / 200.0,
+    );
     let mut signals = empty_schedule(4);
     signals.actions[0][0] = Some(Action::Report(1));
     assert!(
@@ -382,12 +388,18 @@ fn dev_starts_flat_and_benchmark_carries_each_series_independently() {
 #[test]
 fn benchmark_carries_spy_from_an_earlier_non_calendar_date() {
     let mut input = empty_inputs();
-    input.fixes[0].extend([(DEV_START, 100.0), (date(1996, 1, 4), 90.0)]);
-    input
-        .spy
-        .extend([(DEV_START, 2.0), (date(1996, 1, 3), 3.0)]);
+    let previous = date(1996, 1, 1);
+    input.fixes[0].extend([
+        (previous, 100.0),
+        (DEV_START, 100.0),
+        (date(1996, 1, 4), 90.0),
+    ]);
+    input.spy.extend([(previous, 2.0), (date(1996, 1, 3), 3.0)]);
     let market = Market::new(&input).unwrap();
-    near(market.baseline(market.start).unwrap(), 270.0 / 200.0);
+    near(
+        market.benchmark_wealth(market.start).unwrap(),
+        270.0 / 200.0,
+    );
 }
 
 #[test]
@@ -449,7 +461,7 @@ fn recent_reuses_dev_holding_and_restarts_tax_and_wealth() {
     let reused_return = 0.2 / (1.0 - 0.001 / 100.0 - 0.1);
     near(run.days[3].after, reused_return);
     near(segment, 1.0 + reused_return * (1.0 - 0.20315));
-    near(market.recent_baseline(3).unwrap(), 1.32);
+    near(market.benchmark_wealth(3).unwrap(), 1.32);
     assert_eq!(run.fills, 1);
 }
 

@@ -147,19 +147,15 @@ impl Market {
         })
     }
 
-    pub fn recent_baseline(&self, start: usize) -> Result<f64> {
+    pub fn benchmark_wealth(&self, start: usize) -> Result<f64> {
         if !(1..self.dates.len()).contains(&start) {
             return Err(
-                "gate C requires a preceding calendar date and at least one recent return".into(),
+                "benchmark requires a preceding calendar date and at least one return".into(),
             );
         }
-        self.baseline(start - 1)
-    }
-
-    pub fn baseline(&self, start: usize) -> Result<f64> {
         let first = self
             .baseline
-            .get(start)
+            .get(start - 1)
             .copied()
             .flatten()
             .ok_or("missing starting JPY SPY value")?;

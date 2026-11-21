@@ -116,8 +116,8 @@ pub fn run(cot: &Path, fred: &Path, spy: &Path, out: &Path) -> Result<String> {
     let dates = &market.dates[market.start..];
     let offsets = offsets(dates.len())?;
     let recent = market.dates.partition_point(|&day| day < RECENT_START);
-    let b_dev = market.baseline(market.start)?;
-    let b_recent = market.recent_baseline(recent)?;
+    let b_dev = market.benchmark_wealth(market.start)?;
+    let b_recent = market.benchmark_wealth(recent)?;
     let mut sizing = Sizing::default();
     let rows = rows(&input, &market, &mut sizing)?;
     let winner = rows
