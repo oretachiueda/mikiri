@@ -135,7 +135,7 @@ fn public_bound(as_of: Date) -> Result<Date> {
         let delay = if as_of.weekday() == Weekday::Tuesday {
             6
         } else {
-            7
+            14
         };
         as_of.checked_add(Span::new().days(delay))?
     };
@@ -259,16 +259,17 @@ mod tests {
     }
 
     #[test]
-    fn non_tuesday_report_uses_seven_days_before_calendar_roll() {
+    fn non_tuesday_report_uses_fourteen_days_before_calendar_roll() {
         let dates = [
             date(1997, 12, 19),
-            date(1997, 12, 25),
             date(1997, 12, 26),
-            date(1997, 12, 29),
+            date(1998, 1, 5),
+            date(1998, 1, 6),
         ];
         let data = reports(0, vec![report(dates[0], 271, 0.8)]);
         let s = schedule(&dates, &data, Config::all().next().unwrap(), 0).unwrap();
-        assert_eq!(public_bound(dates[0]).unwrap(), dates[2]);
+        assert_eq!(public_bound(dates[0]).unwrap(), date(1998, 1, 2));
+        assert_eq!(s.actions[1][0], None);
         assert_eq!(s.actions[2][0], None);
         assert_eq!(s.actions[3][0], Some(Action::Report(-1)));
     }
