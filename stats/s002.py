@@ -300,6 +300,7 @@ def signals(
     rates: Mapping[str, Mapping[date, float | None]],
     start: date = date(1996, 1, 2),
     raw: bool = False,
+    trace_reports: dict[tuple[date, str], list[date]] | None = None,
 ) -> list[tuple[date, dict[str, date | None], dict[str, int], dict[str, float]]]:
     signal, band, holding, universe = config.split("-")
     if (
@@ -328,6 +329,8 @@ def signals(
                 )
         for asof, public, signal_day, value in usable:
             events.setdefault(signal_day, []).append((asof, leg, value))
+            if trace_reports is not None:
+                trace_reports.setdefault((signal_day, leg), []).append(asof)
             expiry = public + timedelta(days=14)
             if any(
                 public <= other_public <= expiry
@@ -404,6 +407,8 @@ def simulate_returns(
     tax: bool = False,
     costs: bool = True,
     details: dict[str, float] | None = None,
+    trace: list[dict[str, object]] | None = None,
+    trace_reports: Mapping[tuple[date, str], list[date]] | None = None,
 ) -> list[tuple[date, float, float]]:
     from h005 import TaxLedger
 
@@ -426,22 +431,48 @@ def simulate_returns(
     trades = max_gross = max_dd = 0.0
     result = []
     active_calendar = [day for day in calendar if day >= start]
+    signal_legs = {(day, leg) for day, dates, _, _ in actions for leg in dates}
     for i, day in enumerate(active_calendar):
         pnl = 0.0
+        trace_day: list[dict[str, object]] = []
         for leg, series in prices.items():
             price = series.get(day)
-            if price is None:
-                continue
             prior = previous_fix.get(leg)
             notional = positions[leg]
+            spot_ret = carry = spread = 0.0
+            if price is None:
+                if trace is not None and (notional or (day, leg) in signal_legs):
+                    trace_day.append(
+                        {
+                            "date": day,
+                            "leg": leg,
+                            "signal_day_flag": (day, leg) in signal_legs,
+                            "report_as_of": ";".join(
+                                map(str, (trace_reports or {}).get((day, leg), []))
+                            ),
+                            "fill_flag": False,
+                            "direction": (
+                                1 if notional > 0 else -1 if notional < 0 else 0
+                            ),
+                            "L": abs(target_leverage[leg]),
+                            "notional": notional,
+                            "prev_equity": equity,
+                            "spot_ret": 0.0,
+                            "carry_markup_amount": 0.0,
+                            "spread_cost_amount": 0.0,
+                            "leg_pnl": 0.0,
+                        }
+                    )
+                continue
             if prior is not None and notional:
                 previous_day, previous_price = prior
-                pnl += notional * (price / previous_price - 1)
+                spot_ret = price / previous_price - 1
+                pnl += notional * spot_ret
                 held = "USD" if (notional > 0) == (leg in USD_BASE) else leg
                 sold = leg if held == "USD" else "USD"
                 for offset in range(1, (day - previous_day).days + 1):
                     accrual_day = previous_day + timedelta(days=offset)
-                    pnl += (
+                    amount = (
                         abs(notional)
                         * (
                             rate_for_day(rates[held], accrual_day)
@@ -450,6 +481,8 @@ def simulate_returns(
                         )
                         / 365
                     )
+                    carry += amount
+                    pnl += amount
             if leg in fills.get(day, {}):
                 q, leverage = fills[day][leg]
                 new_notional = q * leverage * equity
@@ -460,10 +493,44 @@ def simulate_returns(
                     max_gross, sum(abs(v) for v in target_leverage.values())
                 )
                 if costs:
-                    pnl -= SPREAD[leg] / (2 * price) * abs(new_notional - notional)
+                    spread = SPREAD[leg] / (2 * price) * abs(new_notional - notional)
+                    pnl -= spread
                 positions[leg] = new_notional
+            leg_pnl = notional * spot_ret + carry - spread
+            if trace is not None and (
+                notional
+                or positions[leg]
+                or leg in fills.get(day, {})
+                or (day, leg) in signal_legs
+            ):
+                held_notional = positions[leg]
+                trace_day.append(
+                    {
+                        "date": day,
+                        "leg": leg,
+                        "signal_day_flag": (day, leg) in signal_legs,
+                        "report_as_of": ";".join(
+                            map(str, (trace_reports or {}).get((day, leg), []))
+                        ),
+                        "fill_flag": leg in fills.get(day, {}),
+                        "direction": (
+                            1 if held_notional > 0 else -1 if held_notional < 0 else 0
+                        ),
+                        "L": abs(target_leverage[leg]),
+                        "notional": held_notional,
+                        "prev_equity": equity,
+                        "spot_ret": spot_ret,
+                        "carry_markup_amount": carry,
+                        "spread_cost_amount": spread,
+                        "leg_pnl": leg_pnl,
+                    }
+                )
             previous_fix[leg] = (day, price)
         daily_return = pnl / equity
+        if trace is not None:
+            for row in trace_day:
+                row["daily_return"] = daily_return
+            trace.extend(trace_day)
         equity += pnl
         if not math.isfinite(equity) or equity <= 0:
             raise ValueError(f"bust on {day}")
@@ -772,7 +839,14 @@ def load_inputs(
     return reports, prices, rates, spy_values, hashes
 
 
-def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
+def run_dev(
+    cot: Path,
+    fred: Path,
+    spy: Path,
+    out: Path,
+    trace_config: str | None = None,
+    skip_d: bool = False,
+) -> None:
     import itertools
     import subprocess
 
@@ -797,13 +871,34 @@ def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
             ("lvl", "z52", "z156"), ("b0", "b1"), ("h1", "h2"), ("jpy", "fx8")
         )
     ]
+    if trace_config is not None and trace_config not in configs:
+        raise ValueError("invalid trace config")
+    if skip_d and trace_config is None:
+        raise ValueError("--skip-d requires --trace")
+    trace_rows: list[dict[str, object]] = []
+    trace_reports: dict[tuple[date, str], list[date]] = {}
     paths: dict[str, list[float]] = {}
     wealth: dict[str, tuple[float, float]] = {}
     rows = []
     for config in configs:
-        actions = signals(config, reports, market_calendar, prices, rates)
+        actions = signals(
+            config,
+            reports,
+            market_calendar,
+            prices,
+            rates,
+            trace_reports=trace_reports if config == trace_config else None,
+        )
         stats: dict[str, float] = {}
-        dev = simulate_returns(calendar, actions, prices, rates, details=stats)
+        dev = simulate_returns(
+            calendar,
+            actions,
+            prices,
+            rates,
+            details=stats,
+            trace=trace_rows if config == trace_config else None,
+            trace_reports=trace_reports,
+        )
         pre = simulate_returns(calendar, actions, prices, rates, costs=False)
         post_tax = simulate_returns(calendar, actions, prices, rates, tax=True)
         returns = [r for _, r, _ in dev]
@@ -834,15 +929,20 @@ def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
     b_c = benchmark_wealth(
         calendar[c_index:], spy_values, prices["JPY"], market_calendar[recent_index - 1]
     )
-    winner, gates, values = dev_judgment(paths, wealth, b_dev, b_c)
-    raw = signals(winner, reports, market_calendar, prices, rates, raw=True)
+    winner, base_gates, values = dev_judgment(paths, wealth, b_dev, b_c)
+    gates: dict[str, bool | None] = dict(base_gates)
     actual_sr = sharpe(paths[winner])
-    count, first = d_control(
-        winner, raw, calendar, reports, prices, rates, actual_sr, market_calendar
-    )
-    gates["D"] = count >= 950
     output_values: dict[str, object] = dict(values)
-    output_values.update(d_count_below=count, d_offsets_first10=first)
+    if skip_d:
+        gates["D"] = None
+        output_values.update(d_count_below=None, d_offsets_first10=None)
+    else:
+        raw = signals(winner, reports, market_calendar, prices, rates, raw=True)
+        count, first = d_control(
+            winner, raw, calendar, reports, prices, rates, actual_sr, market_calendar
+        )
+        gates["D"] = count >= 950
+        output_values.update(d_count_below=count, d_offsets_first10=first)
     try:
         root = Path(__file__).resolve().parent.parent
         dirty = subprocess.run(
@@ -893,6 +993,27 @@ def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
             writer.writerow(
                 [day.isoformat(), *(repr(paths[config][i]) for config in configs)]
             )
+    if trace_config is not None:
+        fields = [
+            "date",
+            "leg",
+            "signal_day_flag",
+            "report_as_of",
+            "fill_flag",
+            "direction",
+            "L",
+            "notional",
+            "prev_equity",
+            "spot_ret",
+            "carry_markup_amount",
+            "spread_cost_amount",
+            "leg_pnl",
+            "daily_return",
+        ]
+        with (out / f"trace-{trace_config}.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(trace_rows)
     (out / "summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n"
     )
@@ -907,10 +1028,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--spy", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--holdout", action="store_true")
+    parser.add_argument("--trace")
+    parser.add_argument("--skip-d", action="store_true")
     args = parser.parse_args(argv)
     if args.holdout:
         parser.error("holdout is not implemented and cannot be run")
-    run_dev(args.cot, args.fred, args.spy, args.out)
+    if args.skip_d and not args.trace:
+        parser.error("--skip-d requires --trace")
+    run_dev(args.cot, args.fred, args.spy, args.out, args.trace, args.skip_d)
     return 0
 
 

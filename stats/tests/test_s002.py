@@ -666,6 +666,58 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
     assert set(summary["gates"]) == {"A", "B1", "B2", "C", "D"}
     assert summary["winner"] in {row["config"] for row in results}
     assert len(summary["input_sha256"]) == 19
+    trace_out = tmp_path / "trace"
+
+    def unexpected_d(*args):
+        raise AssertionError("D must be skipped")
+
+    monkeypatch.setattr(s002, "d_control", unexpected_d)
+    assert (
+        s002.main(
+            [
+                "--cot",
+                str(cot),
+                "--fred",
+                str(fred),
+                "--spy",
+                str(spy),
+                "--out",
+                str(trace_out),
+                "--trace",
+                "lvl-b0-h1-jpy",
+                "--skip-d",
+            ]
+        )
+        == 0
+    )
+    assert json.loads((trace_out / "summary.json").read_text())["gates"]["D"] is None
+    assert (trace_out / "daily.csv").read_text() == (out / "daily.csv").read_text()
+    with (trace_out / "trace-lvl-b0-h1-jpy.csv").open() as stream:
+        trace = list(csv.DictReader(stream))
+    fill = next(
+        row for row in trace if row["fill_flag"] == "True" and float(row["notional"])
+    )
+    assert float(fill["spread_cost_amount"]) > 0
+    assert float(fill["leg_pnl"]) == pytest.approx(
+        float(fill["carry_markup_amount"]) - float(fill["spread_cost_amount"])
+    )
+    assert any(
+        row["signal_day_flag"] == "True" and row["report_as_of"] for row in trace
+    )
+    with pytest.raises(SystemExit):
+        s002.main(
+            [
+                "--cot",
+                str(cot),
+                "--fred",
+                str(fred),
+                "--spy",
+                str(spy),
+                "--out",
+                str(out),
+                "--skip-d",
+            ]
+        )
 
 
 def test_fx8_sizes_only_legs_acting_on_the_day(monkeypatch):
