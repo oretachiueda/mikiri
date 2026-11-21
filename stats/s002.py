@@ -507,12 +507,15 @@ def tax_wealth(days: list[date], returns: list[float]) -> float:
 
 
 def benchmark_wealth(
-    days: list[date], spy: Mapping[date, float], jpy: Mapping[date, float | None]
+    days: list[date],
+    spy: Mapping[date, float],
+    jpy: Mapping[date, float | None],
+    previous_day: date,
 ) -> float:
     spy_rows = sorted(spy.items())
     jpy_rows = sorted((day, value) for day, value in jpy.items() if value is not None)
     levels = []
-    for day in (days[0], days[-1]):
+    for day in (previous_day, days[-1]):
         si = bisect.bisect_right(spy_rows, (day, float("inf"))) - 1
         ji = bisect.bisect_right(jpy_rows, (day, float("inf"))) - 1
         if si < 0 or ji < 0:
@@ -816,8 +819,16 @@ def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
                 "psr": probability_sharpe(returns),
             }
         )
-    b_dev = benchmark_wealth(calendar, spy_values, prices["JPY"])
-    b_c = benchmark_wealth(calendar[c_index:], spy_values, prices["JPY"])
+    dev_index = bisect.bisect_left(market_calendar, calendar[0])
+    recent_index = bisect.bisect_left(market_calendar, calendar[c_index])
+    if dev_index == 0 or recent_index == 0:
+        raise ValueError("benchmark requires previous calendar date")
+    b_dev = benchmark_wealth(
+        calendar, spy_values, prices["JPY"], market_calendar[dev_index - 1]
+    )
+    b_c = benchmark_wealth(
+        calendar[c_index:], spy_values, prices["JPY"], market_calendar[recent_index - 1]
+    )
     winner, gates, values = dev_judgment(paths, wealth, b_dev, b_c)
     raw = signals(winner, reports, market_calendar, prices, rates, raw=True)
     actual_sr = sharpe(paths[winner])
