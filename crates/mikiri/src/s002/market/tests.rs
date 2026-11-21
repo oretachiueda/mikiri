@@ -31,7 +31,7 @@ fn empty_inputs() -> Inputs {
 fn empty_schedule(n: usize) -> Schedule {
     Schedule {
         actions: vec![[None; LEGS]; n],
-        active: vec![[true; LEGS]; n],
+        cot_ready: vec![[true; LEGS]; n],
     }
 }
 
@@ -407,7 +407,7 @@ fn circular_shift_wraps_signal_days_and_skips_inactive_destinations() {
     let mut s = empty_schedule(n);
     s.actions[1][0] = Some(Action::Report(1));
     s.actions[4][0] = Some(Action::Report(-1));
-    s.active[3][0] = false;
+    s.cot_ready[3][0] = false;
     let shifted = simulate(&market, &mut Sizing::default(), &s, Some(2)).unwrap();
     assert_eq!(shifted.skipped, 1);
     assert_eq!(shifted.days[0].after, 0.0);
@@ -451,4 +451,41 @@ fn recent_reuses_dev_holding_and_restarts_tax_and_wealth() {
     near(segment, 1.0 + reused_return * (1.0 - 0.20315));
     near(market.recent_baseline(3).unwrap(), 1.32);
     assert_eq!(run.fills, 1);
+}
+
+#[test]
+fn circular_shift_executes_the_shifted_expiry_without_the_live_clock() {
+    let n = 43;
+    let row = LegDay {
+        fix: Some(fix(100.0, 0.01, (0.0, 0.0))),
+        sigma: Some(0.30),
+        rates_ready: true,
+    };
+    let market = Market {
+        dates: days(DEV_START, n),
+        start: 0,
+        legs: vec![[row; LEGS]; n],
+        baseline: vec![],
+    };
+    let mut input = empty_inputs();
+    input.reports[0].push(Report {
+        as_of: DEV_START,
+        slot: 170,
+        hp: -0.5,
+    });
+    let config = Config::all().next().unwrap();
+    let s = schedule(&market.dates, &input.reports, config, market.start).unwrap();
+    assert_eq!(s.actions[7][0], Some(Action::Report(1)));
+    assert_eq!(s.actions[20][0], Some(Action::Exit));
+
+    let dev = simulate(&market, &mut Sizing::default(), &s, None).unwrap();
+    assert_eq!(dev.days[24].after, 0.0);
+
+    let shifted = simulate(&market, &mut Sizing::default(), &s, Some(15)).unwrap();
+    assert_eq!(shifted.skipped, 0);
+    assert_eq!(shifted.fills, 2);
+    near(shifted.days[23].after, -0.001 / 100.0);
+    assert!(shifted.days[24].after > 0.0);
+    assert!(shifted.days[36].after > 0.0);
+    assert_eq!(shifted.days[37].after, 0.0);
 }

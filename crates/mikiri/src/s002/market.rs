@@ -421,7 +421,7 @@ pub(super) fn simulate(
                 let row = market.legs[index][leg];
                 let disabled = shift.is_some()
                     && direction != 0
-                    && !(schedule.active[index][leg] && row.rates_ready && row.sigma.is_some());
+                    && !(schedule.cot_ready[index][leg] && row.rates_ready && row.sigma.is_some());
                 account.skipped += usize::from(disabled);
                 directions[leg] = if disabled { 0 } else { direction };
                 if !rebalance {

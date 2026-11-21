@@ -144,7 +144,7 @@ fn public_bound(as_of: Date) -> Result<Date> {
 
 pub(super) struct Schedule {
     pub actions: Vec<Actions>,
-    pub active: Vec<[bool; LEGS]>,
+    pub cot_ready: Vec<[bool; LEGS]>,
 }
 
 pub(super) fn schedule(
@@ -155,7 +155,7 @@ pub(super) fn schedule(
 ) -> Result<Schedule> {
     let mut schedule = Schedule {
         actions: vec![[None; LEGS]; dates.len()],
-        active: vec![[false; LEGS]; dates.len()],
+        cot_ready: vec![[false; LEGS]; dates.len()],
     };
     for (leg, reports) in reports
         .iter()
@@ -210,7 +210,7 @@ pub(super) fn schedule(
                 }
                 schedule.actions[index][leg] = action;
             }
-            schedule.active[index][leg] = qualified && !expired;
+            schedule.cot_ready[index][leg] = qualified;
         }
     }
     Ok(schedule)
@@ -329,8 +329,6 @@ mod tests {
                 (date(2004, 8, 24), 1),
             ]
         );
-        let gap = dates.binary_search(&date(2003, 1, 1)).unwrap();
-        assert!(!s.active[gap][6]);
     }
 
     #[test]
@@ -374,7 +372,7 @@ mod tests {
         let s = schedule(&dates, &reports, config, 0).unwrap();
         assert_eq!(s.actions[(52 + 1) * 7][0], Some(Action::Report(-1)));
         assert_eq!(s.actions[(54 + 1) * 7][0], Some(Action::Exit));
-        assert!(!s.active[(104 + 1) * 7][0]);
+        assert!(!s.cot_ready[(104 + 1) * 7][0]);
         assert_eq!(s.actions[(105 + 1) * 7][0], Some(Action::Report(-1)));
     }
 
