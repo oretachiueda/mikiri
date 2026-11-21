@@ -534,3 +534,20 @@ def deflated_sharpe(
 
 def winning_config(paths: Mapping[str, list[float]]) -> str:
     return min(paths, key=lambda name: (-sharpe(paths[name]), name))
+
+
+def shift_signal_days(
+    calendar: list[date],
+    actions: Sequence[
+        tuple[date, Mapping[str, date | None], Mapping[str, int], Mapping[str, float]]
+    ],
+    offset: int,
+) -> list[tuple[date, dict[str, int]]]:
+    shifted: dict[date, dict[str, int]] = {}
+    for signal_day, _, directions, _ in sorted(actions, key=lambda row: row[0]):
+        index = bisect.bisect_left(calendar, signal_day)
+        if index == len(calendar):
+            raise ValueError("signal outside calendar")
+        day = calendar[(index + offset) % len(calendar)]
+        shifted.setdefault(day, {}).update(directions)
+    return sorted(shifted.items())

@@ -404,3 +404,19 @@ def test_sharpe_psr_dsr_and_tie():
     assert 0 < dsr < 1
     assert sr0 > 0 and variance > 0
     assert winning_config({"z": values, "a": values}) == "a"
+
+
+def test_circular_shift_preserves_leg_directions_and_exits():
+    from datetime import date, timedelta
+
+    from s002 import shift_signal_days
+
+    days = [date(2020, 1, 1) + timedelta(days=i) for i in range(5)]
+    actions = [
+        (days[1], {"JPY": days[2]}, {"JPY": -1}, {"JPY": 1.0}),
+        (days[4], {"JPY": None}, {"JPY": 0}, {"JPY": 0.0}),
+    ]
+    assert shift_signal_days(days, actions, 2) == [
+        (days[1], {"JPY": 0}),
+        (days[3], {"JPY": -1}),
+    ]
