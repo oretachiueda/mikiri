@@ -628,6 +628,40 @@ def shifted_actions(
     return result
 
 
+def dev_judgment(
+    paths: Mapping[str, list[float]],
+    wealth: Mapping[str, tuple[float, float]],
+    b_dev: float,
+    b_c: float,
+) -> tuple[str, dict[str, bool], dict[str, float]]:
+    if len(paths) != 24 or paths.keys() != wealth.keys():
+        raise ValueError("expected 24 matching configurations")
+    if len({len(path) for path in paths.values()}) != 1:
+        raise ValueError("dev paths must share a calendar")
+    winner = winning_config(paths)
+    psr = probability_sharpe(paths[winner])
+    dsr, sr0, variance = deflated_sharpe(paths[winner], list(paths.values()))
+    w_dev, w_c = wealth[winner]
+    gates = {
+        "A": w_dev > b_dev,
+        "B1": psr >= 1 - 0.05 / 276,
+        "B2": dsr >= 0.95,
+        "C": w_c > b_c,
+    }
+    values = {
+        "W_dev": w_dev,
+        "B_dev": b_dev,
+        "W_C": w_c,
+        "B_C": b_c,
+        "psr": psr,
+        "psr_bar": 1 - 0.05 / 276,
+        "dsr": dsr,
+        "sr0_daily": sr0,
+        "V": variance,
+    }
+    return winner, gates, values
+
+
 def judgment_gates(
     w_dev: float,
     b_dev: float,

@@ -521,3 +521,21 @@ def test_out_of_order_publication_keeps_last_expiry():
     output = signals("lvl-b0-h1-jpy", reports, calendar, prices, rates, begin)
     assert output[-1][0] == date(2020, 4, 3)
     assert output[-1][2]["JPY"] == 0
+
+
+def test_dev_judgment_selects_winner_and_uses_its_wealth():
+    from s002 import dev_judgment
+
+    paths = {
+        f"{i:02}": [x + i * 0.001 for x in (-0.02, 0.01, 0.03, 0.04, -0.01)]
+        for i in range(24)
+    }
+    wealth = {name: (0.5, 0.5) for name in paths}
+    wealth["23"] = (2.0, 0.8)
+    winner, gates, values = dev_judgment(paths, wealth, 1.0, 1.0)
+    assert winner == "23"
+    assert gates["A"] and not gates["C"]
+    assert set(gates) == {"A", "B1", "B2", "C"}
+    assert values["W_dev"] == 2.0 and values["W_C"] == 0.8
+    with pytest.raises(ValueError, match="24"):
+        dev_judgment({}, {}, 1.0, 1.0)
