@@ -296,9 +296,15 @@ pub(super) struct Daily {
 pub(super) struct Account {
     pub days: Vec<Daily>,
     pub equity: f64,
-    pub fills: usize,
+    entries: usize,
     pub max_gross: f64,
     pub skipped: usize,
+}
+
+impl Account {
+    pub fn entries_per_year(&self) -> f64 {
+        self.entries as f64 / (self.days.len() as f64 / DAYS_PER_YEAR)
+    }
 }
 
 #[derive(Default)]
@@ -342,7 +348,7 @@ fn pnl(
 ) -> Result<(f64, f64, usize)> {
     let mut before = 0.0;
     let mut after = 0.0;
-    let mut fills = 0;
+    let mut entries = 0;
     if position != 0.0 {
         let (carry, markup) = fix.carry.ok_or("missing rate while holding a position")?;
         before = position * (fix.spot + carry);
@@ -354,11 +360,15 @@ fn pnl(
         let delta = (next - notional).abs();
         if delta > 0.0 {
             after -= 0.5 * ROUND_TRIP[leg] / fix.price * delta;
-            fills += if next * notional < 0.0 { 2 } else { 1 };
+            if next != 0.0
+                && (notional == 0.0 || next.is_sign_positive() != notional.is_sign_positive())
+            {
+                entries += 1;
+            }
         }
         notional = next;
     }
-    Ok((before, after, fills))
+    Ok((before, after, entries))
 }
 
 pub(super) fn simulate(
@@ -371,7 +381,7 @@ pub(super) fn simulate(
     let mut account = Account {
         days: Vec::with_capacity(t),
         equity: 1.0,
-        fills: 0,
+        entries: 0,
         max_gross: 0.0,
         skipped: 0,
     };
@@ -383,19 +393,22 @@ pub(super) fn simulate(
         let mut before = 0.0;
         let mut after = 0.0;
         let previous_equity = account.equity;
+        let mut gross_at_fixes = 0.0;
         for (leg, row) in market.legs[index].iter().enumerate() {
             if let Some(fix) = row.fix {
-                let next = pending[leg].last().map(|l| l * previous_equity);
-                let (gross, net, fills) =
+                let filled_leverage = pending[leg].last().copied();
+                let (gross, net, entries) =
                     pnl(leg, fix, held[leg], previous_equity, &mut pending[leg])?;
                 before += gross;
                 after += net;
-                account.fills += fills;
-                if let Some(next) = next {
-                    held[leg] = next;
+                account.entries += entries;
+                if let Some(leverage) = filled_leverage {
+                    gross_at_fixes += leverage.abs();
+                    held[leg] = leverage * previous_equity;
                 }
             }
         }
+        account.max_gross = account.max_gross.max(gross_at_fixes);
         account.days.push(Daily {
             before: before / previous_equity,
             after: after / previous_equity,
@@ -420,7 +433,6 @@ pub(super) fn simulate(
             }
         }
         let targets = sizing.targets(market, index, directions)?;
-        account.max_gross = account.max_gross.max(targets.iter().map(|x| x.abs()).sum());
         for (leg, (action, target)) in actions.into_iter().zip(targets).enumerate() {
             if action.is_some() {
                 pending[leg].push(target);

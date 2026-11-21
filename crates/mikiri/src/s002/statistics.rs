@@ -109,6 +109,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn drawdown_includes_starting_wealth_and_later_peaks() {
+        assert_eq!(max_drawdown(&[-0.125, 0.5]), 0.125);
+        assert_eq!(max_drawdown(&[0.5, -0.25, 0.125]), 0.25);
+    }
+
+    #[test]
     fn splitmix_offsets_are_distinct_bounded_and_match_reference() {
         let offsets = offsets(7_258).unwrap();
         assert_eq!(

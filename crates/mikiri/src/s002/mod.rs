@@ -73,11 +73,6 @@ fn clean_commit() -> Option<String> {
 }
 
 fn rows(input: &input::Inputs, market: &Market, sizing: &mut Sizing) -> Result<Vec<Row>> {
-    let duration = input::days_between(
-        market.dates[market.start],
-        market.dates[market.dates.len() - 1],
-    ) as f64
-        / 365.0;
     Config::all()
         .map(|config| {
             let id = config.id();
@@ -93,7 +88,7 @@ fn rows(input: &input::Inputs, market: &Market, sizing: &mut Sizing) -> Result<V
                 id,
                 sr_after_daily,
                 sr_before: annual(sr(&before)?),
-                trades_per_year: account.fills as f64 / duration,
+                trades_per_year: account.entries_per_year(),
                 max_gross: account.max_gross,
                 max_dd: max_drawdown(&after),
                 psr: psr(&after, sr_after_daily, 0.0)?,

@@ -201,7 +201,7 @@ fn one_trade_hand_calc_uses_fix_pnl_carry_markup_spread_and_fixed_notional_t5() 
     near(account.days[5].after, -(marked_loss + exit) / (1.0 - entry));
     near(account.equity, 1.0 - entry - marked_loss - exit);
     assert_eq!(account.days[6].after, 0.0);
-    assert_eq!(account.fills, 2);
+    assert_eq!(account.entries, 1);
     near(ROUND_TRIP[5] / 2.0, 0.00003);
 }
 
@@ -426,7 +426,7 @@ fn circular_shift_wraps_signal_days_and_skips_inactive_destinations() {
     near(shifted.days[1].after, -0.001 / 100.0);
     near(shifted.days[2].before, -0.01 / (1.0 - 0.001 / 100.0));
     assert_eq!(shifted.days[4].after, 0.0);
-    assert_eq!(shifted.fills, 2);
+    assert_eq!(shifted.entries, 1);
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn recent_reuses_dev_holding_and_restarts_tax_and_wealth() {
     near(run.days[3].after, reused_return);
     near(segment, 1.0 + reused_return * (1.0 - 0.20315));
     near(market.benchmark_wealth(3).unwrap(), 1.32);
-    assert_eq!(run.fills, 1);
+    assert_eq!(run.entries, 1);
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn circular_shift_executes_the_shifted_expiry_without_the_live_clock() {
 
     let shifted = simulate(&market, &mut Sizing::default(), &s, Some(15)).unwrap();
     assert_eq!(shifted.skipped, 0);
-    assert_eq!(shifted.fills, 2);
+    assert_eq!(shifted.entries, 1);
     near(shifted.days[23].after, -0.001 / 100.0);
     assert!(shifted.days[24].after > 0.0);
     assert!(shifted.days[36].after > 0.0);
@@ -528,5 +528,38 @@ fn staggered_report_sizes_and_fills_only_the_legs_acting_that_day() {
         run.days[3].before,
         (0.02 + 0.02 * after_jpy_entry) / after_eur_entry,
     );
-    assert_eq!(run.fills, 2);
+    assert_eq!(run.entries, 2);
+}
+
+#[test]
+fn entries_and_gross_leverage_count_on_actual_fixes() {
+    let n = 8;
+    let row = LegDay {
+        fix: Some(fix(100.0, 0.0, (0.0, 0.0))),
+        sigma: Some(0.30),
+        rates_ready: true,
+    };
+    let mut market = Market {
+        dates: days(DEV_START, n),
+        start: 0,
+        legs: vec![[row; LEGS]; n],
+        baseline: vec![],
+    };
+    market.legs[1][0].sigma = Some(0.15);
+    market.legs[5][0].sigma = Some(0.15);
+    market.legs[5][1].fix = None;
+    market.legs[7][1].sigma = Some(0.03);
+    let mut s = empty_schedule(n);
+    s.actions[0][0] = Some(Action::Report(1));
+    s.actions[1][0] = Some(Action::Report(1));
+    s.actions[2][0] = Some(Action::Report(-1));
+    s.actions[3][0] = Some(Action::Exit);
+    s.actions[4][1] = Some(Action::Report(1));
+    s.actions[5][0] = Some(Action::Report(1));
+    s.actions[7][1] = Some(Action::Report(-1));
+
+    let run = simulate(&market, &mut Sizing::default(), &s, None).unwrap();
+    assert_eq!(run.entries, 4);
+    assert_eq!(run.entries_per_year(), 4.0 * 252.0 / n as f64);
+    near(run.max_gross, 3.0);
 }
