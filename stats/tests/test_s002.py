@@ -471,7 +471,16 @@ def test_shifted_actions_recompute_size_and_inactive_cash():
     assert result[0][2]["JPY"] == -1
     assert result[0][3]["JPY"] > 0
     later = shifted_actions("lvl-b0-h1-jpy", raw, 40, days, reports, prices, rates)
-    assert later[0][2]["JPY"] == 0
+    assert later[0][2]["JPY"] == -1
+    early = shifted_actions("lvl-b0-h1-jpy", raw, 1, days, reports, prices, rates)
+    assert early[0][2]["JPY"] == 0
+    exit_signal = [(days[50], {"JPY": days[51]}, {"JPY": 0}, {"JPY": 0.0})]
+    assert (
+        shifted_actions("lvl-b0-h1-jpy", exit_signal, 40, days, reports, prices, rates)[
+            0
+        ][2]["JPY"]
+        == 0
+    )
 
 
 def test_cli_refuses_holdout_and_missing_inputs(tmp_path, capsys):

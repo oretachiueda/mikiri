@@ -627,12 +627,13 @@ def shifted_actions(
             active = bool(
                 history
                 and history[-1][2]
-                and day < history[-1][1] + timedelta(days=14)
                 and has_rate(rates[leg], day)
                 and has_rate(rates["USD"], day)
             )
             current[leg] = q if active else 0
-        sizes = size_positions(day, current, prices, universe)
+        sizes = size_positions(
+            day, {leg: current[leg] for leg in updates}, prices, universe
+        )
         fills = {}
         directions = {}
         leverage = {}
