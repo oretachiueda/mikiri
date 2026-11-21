@@ -449,3 +449,23 @@ def test_tax_reduces_equity_before_later_sizing():
     pretax = simulate_returns(days, actions, prices, rates, days[0])
     assert taxed[2][2] < pretax[2][2]
     assert taxed[4][2] < pretax[4][2]
+
+
+def test_shifted_actions_recompute_size_and_inactive_cash():
+    import math
+    from datetime import date, timedelta
+
+    from s002 import shifted_actions
+
+    begin = date(2020, 1, 1)
+    days = [begin + timedelta(days=i) for i in range(100)]
+    prices = {"JPY": {d: 100 * math.exp(0.001 * (i % 3)) for i, d in enumerate(days)}}
+    rates = {"JPY": {date(2019, 1, 1): 1.0}, "USD": {date(2019, 1, 1): 1.0}}
+    reports = {"JPY": [(days[55], 0.5)]}
+    raw = [(days[50], {"JPY": days[51]}, {"JPY": -1}, {"JPY": 1.0})]
+    result = shifted_actions("lvl-b0-h1-jpy", raw, 17, days, reports, prices, rates)
+    assert result[0][0] == days[67]
+    assert result[0][2]["JPY"] == -1
+    assert result[0][3]["JPY"] > 0
+    later = shifted_actions("lvl-b0-h1-jpy", raw, 40, days, reports, prices, rates)
+    assert later[0][2]["JPY"] == 0

@@ -299,6 +299,7 @@ def signals(
     prices: Mapping[str, Mapping[date, float | None]],
     rates: Mapping[str, Mapping[date, float | None]],
     start: date = date(1996, 1, 2),
+    raw: bool = False,
 ) -> list[tuple[date, dict[str, date | None], dict[str, int], dict[str, float]]]:
     signal, band, holding, universe = config.split("-")
     if (
@@ -356,7 +357,9 @@ def signals(
             )
             fills[leg] = fixes[0] if fixes else None
             result_size[leg] = sizes[leg]
-            result_direction[leg] = active[leg] if sizes[leg] else 0
+            result_direction[leg] = (
+                current[leg] if raw else active[leg] if sizes[leg] else 0
+            )
         output.append((day, fills, result_direction, result_size))
     return output
 
@@ -563,3 +566,59 @@ def shift_signal_days(
         day = calendar[(index + offset) % len(calendar)]
         shifted.setdefault(day, {}).update(directions)
     return sorted(shifted.items())
+
+
+def shifted_actions(
+    config: str,
+    raw_actions: Sequence[
+        tuple[date, Mapping[str, date | None], Mapping[str, int], Mapping[str, float]]
+    ],
+    offset: int,
+    calendar: list[date],
+    reports: dict[str, list[tuple[date, float]]],
+    prices: Mapping[str, Mapping[date, float | None]],
+    rates: Mapping[str, Mapping[date, float | None]],
+) -> list[tuple[date, dict[str, date | None], dict[str, int], dict[str, float]]]:
+    signal, _, _, universe = config.split("-")
+    legs = ("JPY",) if universe == "jpy" else LEGS
+    availability: dict[str, list[tuple[date, date, bool]]] = {}
+    for leg in legs:
+        rows = sorted(latest_slots(reports[leg]).values())
+        zs = {} if signal == "lvl" else z_values(rows, int(signal[1:]))
+        history = []
+        for asof, _ in rows:
+            try:
+                public, usable = public_and_signal(asof, calendar)
+            except ValueError:
+                continue
+            if usable is not None:
+                history.append(
+                    (usable, public, signal == "lvl" or zs[asof] is not None)
+                )
+        availability[leg] = sorted(history)
+    current = dict.fromkeys(legs, 0)
+    result = []
+    for day, updates in shift_signal_days(calendar, raw_actions, offset):
+        for leg, q in updates.items():
+            history = [entry for entry in availability[leg] if entry[0] <= day]
+            active = bool(
+                history
+                and history[-1][2]
+                and day < history[-1][1] + timedelta(days=14)
+                and has_rate(rates[leg], day)
+                and has_rate(rates["USD"], day)
+            )
+            current[leg] = q if active else 0
+        sizes = size_positions(day, current, prices, universe)
+        fills = {}
+        directions = {}
+        leverage = {}
+        for leg in updates:
+            fixes = sorted(
+                d for d, value in prices[leg].items() if d > day and value is not None
+            )
+            fills[leg] = fixes[0] if fixes else None
+            directions[leg] = current[leg] if sizes[leg] else 0
+            leverage[leg] = sizes[leg]
+        result.append((day, fills, directions, leverage))
+    return result
