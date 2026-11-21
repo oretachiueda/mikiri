@@ -658,6 +658,11 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
         results = list(csv.DictReader(stream))
     summary = json.loads((out / "summary.json").read_text())
     assert len(results) == 24
+    with (out / "daily.csv").open() as stream:
+        daily = list(csv.DictReader(stream))
+    assert len(daily) == summary["T"]
+    assert list(daily[0]) == ["date", *(row["config"] for row in results)]
+    assert all(math.isfinite(float(row[results[0]["config"]])) for row in daily)
     assert set(summary["gates"]) == {"A", "B1", "B2", "C", "D"}
     assert summary["winner"] in {row["config"] for row in results}
     assert len(summary["input_sha256"]) == 19

@@ -882,6 +882,13 @@ def run_dev(cot: Path, fred: Path, spy: Path, out: Path) -> None:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+    with (out / "daily.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["date", *configs])
+        for i, day in enumerate(calendar):
+            writer.writerow(
+                [day.isoformat(), *(repr(paths[config][i]) for config in configs)]
+            )
     (out / "summary.json").write_text(
         json.dumps(summary, indent=2, allow_nan=False) + "\n"
     )
