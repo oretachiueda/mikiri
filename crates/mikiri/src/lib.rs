@@ -12,3 +12,5 @@ pub mod h005;
 pub mod h006;
 
 pub mod paper_recorder;
+
+pub mod s002;
