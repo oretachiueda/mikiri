@@ -391,6 +391,9 @@ def test_benchmark_forward_fill_and_restart():
     jpy = {days[0]: 100, days[1]: None, days[2]: 110}
     assert benchmark_wealth(days, spy, jpy) == pytest.approx(1.32)
     assert benchmark_wealth(days[1:], spy, jpy) == pytest.approx(1.1)
+    assert benchmark_wealth(
+        days, {days[0]: 100, days[2]: 120}, {days[0]: 100, days[1]: 110}
+    ) == pytest.approx(1.32)
 
 
 def test_sharpe_psr_dsr_and_tie():
