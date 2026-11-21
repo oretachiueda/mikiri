@@ -375,11 +375,11 @@ fn history(source: &Sources, stage: Stage) -> Result<Vec<Day>> {
 }
 
 #[derive(Default)]
-struct Taxes {
+pub(crate) struct Taxes {
     losses: BTreeMap<i32, f64>,
 }
 impl Taxes {
-    fn settle(&mut self, year: i32, income: f64) -> f64 {
+    pub(crate) fn settle(&mut self, year: i32, income: f64) -> f64 {
         self.losses.retain(|v, _| *v + 3 >= year);
         let mut taxable = income.max(0.0);
         if income < 0.0 {

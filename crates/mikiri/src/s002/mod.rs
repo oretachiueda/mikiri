@@ -4,6 +4,7 @@ use jiff::civil::{Date, date};
 use std::error::Error;
 
 mod input;
+mod market;
 mod signals;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
