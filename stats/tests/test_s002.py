@@ -257,3 +257,109 @@ def test_fx8_incomplete_joint_window_and_zero_portfolio():
     prices["EUR"] = prices["JPY"].copy()
     with pytest.raises(ValueError, match="volatility"):
         size_positions(day, {"JPY": 1, "EUR": -1}, prices, "fx8")
+
+
+def test_public_non_tuesday_waits_seven_days():
+    from datetime import date
+
+    from s002 import public_and_signal
+
+    calendar = [date(2024, 1, 8), date(2024, 1, 9), date(2024, 1, 10)]
+    assert public_and_signal(date(2024, 1, 1), calendar) == (calendar[0], calendar[1])
+    assert public_and_signal(date(2024, 1, 2), calendar) == (calendar[0], calendar[1])
+    assert public_and_signal(date(2024, 1, 3), calendar) == (calendar[2], None)
+
+
+def test_one_trade_spot_carry_markup_spread_and_exit():
+    from datetime import date
+
+    from s002 import simulate_returns
+
+    days = [date(2024, 1, 30), date(2024, 1, 31), date(2024, 2, 2), date(2024, 2, 5)]
+    prices = {"EUR": {days[0]: 1.0, days[1]: 1.0, days[2]: 1.1, days[3]: 1.2}}
+    rates = {
+        "EUR": {date(2023, 11, 1): 5.0, date(2023, 12, 1): 6.0},
+        "USD": {date(2023, 11, 1): 2.0, date(2023, 12, 1): None},
+    }
+    actions = [
+        (days[0], {"EUR": days[1]}, {"EUR": 1}, {"EUR": 2.0}),
+        (days[2], {"EUR": days[3]}, {"EUR": 0}, {"EUR": 0.0}),
+    ]
+    result = simulate_returns(days, actions, prices, rates, days[0])
+    entry_cost = 0.00004 / 2 * 2
+    assert result[1][1] == pytest.approx(-entry_cost)
+    carry = 2 * 2 * (0.06 - 0.02 - 0.0135) / 365
+    pnl = 2 * 0.1 + carry
+    assert result[2][1] == pytest.approx(pnl / (1 - entry_cost))
+    exit_carry = 2 * 3 * (0.06 - 0.02 - 0.0135) / 365
+    exit_pnl = 2 * (1.2 / 1.1 - 1) + exit_carry - (0.00004 / 2 / 1.2 * 2)
+    assert result[3][1] == pytest.approx(exit_pnl / result[2][2])
+
+
+def test_rate_rollover_short_markup_and_mxn_spread():
+    from datetime import date
+
+    from s002 import rate_for_day, simulate_returns
+
+    days = [date(2024, 1, 29), date(2024, 1, 30), date(2024, 2, 2)]
+    rates = {
+        "USD": {date(2023, 11, 1): 4, date(2023, 12, 1): 5},
+        "MXN": {date(2023, 11, 1): 8, date(2023, 12, 1): None},
+    }
+    assert rate_for_day(rates["MXN"], days[-1]) == 0.08
+    prices = {"MXN": {days[0]: 20.0, days[1]: 20.0, days[2]: 20.0}}
+    actions = [(days[0], {"MXN": days[1]}, {"MXN": -1}, {"MXN": 1.0})]
+    result = simulate_returns(days, actions, prices, rates, days[0])
+    assert result[1][1] == pytest.approx(-0.003 / 2 / 20)
+    expected = ((0.08 - 0.04 - 0.02) + 2 * (0.08 - 0.05 - 0.02)) / 365
+    assert result[2][1] == pytest.approx(expected / result[1][2])
+
+
+def test_notional_uses_previous_equity_and_bust():
+    from datetime import date, timedelta
+
+    from s002 import simulate_returns
+
+    days = [date(2024, 1, 1) + timedelta(days=i) for i in range(5)]
+    prices = {"JPY": dict(zip(days, [100.0, 100.0, 110.0, 110.0, 120.0], strict=True))}
+    rates = {"JPY": {date(2023, 1, 1): 0.0}, "USD": {date(2023, 1, 1): 1.35}}
+    actions = [
+        (days[0], {"JPY": days[1]}, {"JPY": 1}, {"JPY": 1.0}),
+        (days[2], {"JPY": days[3]}, {"JPY": 1}, {"JPY": 2.0}),
+    ]
+    result = simulate_returns(days, actions, prices, rates, days[0])
+    expected_notional = 2 * result[2][2]
+    assert result[4][1] == pytest.approx(
+        expected_notional * (120 / 110 - 1) / result[3][2]
+    )
+    prices["JPY"][days[2]] = 1.0
+    actions[0][3]["JPY"] = 10.0
+    with pytest.raises(ValueError, match="bust"):
+        simulate_returns(days, actions, prices, rates, days[0])
+
+
+def test_spreads_and_flat_or_missing_fix_days():
+    from datetime import date, timedelta
+
+    from s002 import SPREAD, simulate_returns
+
+    assert SPREAD == {
+        "JPY": 0.002,
+        "EUR": 0.00004,
+        "GBP": 0.0003,
+        "CHF": 0.0003,
+        "CAD": 0.0003,
+        "AUD": 0.00006,
+        "NZD": 0.0003,
+        "MXN": 0.003,
+    }
+    start = date(2024, 1, 1)
+    days = [start + timedelta(days=i) for i in range(4)]
+    prices = {"AUD": {days[0]: 1.0, days[1]: 1.0, days[3]: 1.0}}
+    rates = {"AUD": {date(2023, 1, 1): 0}, "USD": {date(2023, 1, 1): 0}}
+    action = [(days[0], {"AUD": days[1]}, {"AUD": 1}, {"AUD": 1.0})]
+    result = simulate_returns(days, action, prices, rates, start)
+    assert result[0][1] == 0
+    assert result[1][1] == pytest.approx(-0.00006 / 2)
+    assert result[2][1] == 0
+    assert result[3][1] == pytest.approx(-2 * 0.0135 / 365 / result[2][2])

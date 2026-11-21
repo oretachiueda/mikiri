@@ -8,7 +8,7 @@ import json
 import math
 import statistics
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -185,7 +185,7 @@ def public_and_signal(day: date, calendar: list[date]) -> tuple[date, date | Non
     elif date(2018, 12, 24) <= day <= date(2019, 3, 12):
         public = date(2019, 3, 29)
     else:
-        public = day + timedelta(days=6)
+        public = day + timedelta(days=6 if day.weekday() == 1 else 7)
     index = bisect.bisect_left(calendar, public)
     if index == len(calendar):
         raise ValueError("calendar ends before public date")
@@ -359,3 +359,89 @@ def signals(
             result_direction[leg] = active[leg] if sizes[leg] else 0
         output.append((day, fills, result_direction, result_size))
     return output
+
+
+SPREAD = {
+    "JPY": 0.002,
+    "EUR": 0.00004,
+    "GBP": 0.0003,
+    "CHF": 0.0003,
+    "CAD": 0.0003,
+    "AUD": 0.00006,
+    "NZD": 0.0003,
+    "MXN": 0.003,
+}
+
+
+def rate_for_day(rates: Mapping[date, float | None], day: date) -> float:
+    month = day.year * 12 + day.month - 1 - 2
+    available = [
+        (d, value)
+        for d, value in rates.items()
+        if d.year * 12 + d.month - 1 <= month and value is not None
+    ]
+    if not available:
+        raise ValueError(f"missing rate for {day}")
+    return max(available, key=lambda row: row[0])[1] / 100
+
+
+def simulate_returns(
+    calendar: list[date],
+    actions: Sequence[
+        tuple[date, Mapping[str, date | None], Mapping[str, int], Mapping[str, float]]
+    ],
+    prices: Mapping[str, Mapping[date, float | None]],
+    rates: Mapping[str, Mapping[date, float | None]],
+    start: date = date(1996, 1, 2),
+) -> list[tuple[date, float, float]]:
+    fills: dict[date, dict[str, tuple[int, float]]] = {}
+    for signal_day, dates, directions, sizes in sorted(
+        actions, key=lambda action: action[0]
+    ):
+        for leg, fill_day in dates.items():
+            if fill_day is not None:
+                if fill_day <= signal_day:
+                    raise ValueError("fill must follow signal")
+                fills.setdefault(fill_day, {})[leg] = (directions[leg], sizes[leg])
+    positions = {leg: 0.0 for leg in prices}
+    previous_fix: dict[str, tuple[date, float]] = {}
+    equity = 1.0
+    result = []
+    for day in calendar:
+        if day < start:
+            continue
+        pnl = 0.0
+        for leg, series in prices.items():
+            price = series.get(day)
+            if price is None:
+                continue
+            prior = previous_fix.get(leg)
+            notional = positions[leg]
+            if prior is not None and notional:
+                previous_day, previous_price = prior
+                pnl += notional * (price / previous_price - 1)
+                held = "USD" if (notional > 0) == (leg in USD_BASE) else leg
+                sold = leg if held == "USD" else "USD"
+                for offset in range(1, (day - previous_day).days + 1):
+                    accrual_day = previous_day + timedelta(days=offset)
+                    pnl += (
+                        abs(notional)
+                        * (
+                            rate_for_day(rates[held], accrual_day)
+                            - rate_for_day(rates[sold], accrual_day)
+                            - (0.02 if leg == "MXN" else 0.0135)
+                        )
+                        / 365
+                    )
+            if leg in fills.get(day, {}):
+                q, leverage = fills[day][leg]
+                new_notional = q * leverage * equity
+                pnl -= SPREAD[leg] / (2 * price) * abs(new_notional - notional)
+                positions[leg] = new_notional
+            previous_fix[leg] = (day, price)
+        daily_return = pnl / equity
+        equity += pnl
+        if not math.isfinite(equity) or equity <= 0:
+            raise ValueError(f"bust on {day}")
+        result.append((day, daily_return, equity))
+    return result
