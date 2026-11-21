@@ -326,10 +326,14 @@ def signals(
                 usable.append(
                     (asof, public, signal_day, hp if signal == "lvl" else zs[asof])
                 )
-        for i, (asof, public, signal_day, value) in enumerate(usable):
+        for asof, public, signal_day, value in usable:
             events.setdefault(signal_day, []).append((asof, leg, value))
             expiry = public + timedelta(days=14)
-            if i + 1 < len(usable) and usable[i + 1][1] <= expiry:
+            if any(
+                public <= other_public <= expiry
+                and (other_public > public or other_asof > asof)
+                for other_asof, other_public, _, _ in usable
+            ):
                 continue
             at = bisect.bisect_left(calendar, expiry)
             if at < len(calendar):

@@ -503,3 +503,21 @@ def test_judgment_gates_and_d_threshold():
     )["D"]
     with pytest.raises(ValueError, match="1,000"):
         judgment_gates(2.0, 1.0, 2.0, 1.0, 1.0, 1.0, values[:-1], 1.0)
+
+
+def test_out_of_order_publication_keeps_last_expiry():
+    import math
+    from datetime import date, timedelta
+
+    from s002 import signals
+
+    begin = date(2020, 1, 1)
+    calendar = [begin + timedelta(days=i) for i in range(160)]
+    prices = {
+        "JPY": {day: 100 * math.exp(0.001 * (i % 3)) for i, day in enumerate(calendar)}
+    }
+    rates = {"JPY": {date(2019, 1, 1): 1.0}, "USD": {date(2019, 1, 1): 1.0}}
+    reports = {"JPY": [(date(2020, 3, 6), 0.5), (date(2020, 3, 10), -0.5)]}
+    output = signals("lvl-b0-h1-jpy", reports, calendar, prices, rates, begin)
+    assert output[-1][0] == date(2020, 4, 3)
+    assert output[-1][2]["JPY"] == 0
