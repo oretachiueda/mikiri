@@ -147,6 +147,15 @@ impl Market {
         })
     }
 
+    pub fn recent_baseline(&self, start: usize) -> Result<f64> {
+        if !(1..self.dates.len()).contains(&start) {
+            return Err(
+                "gate C requires a preceding calendar date and at least one recent return".into(),
+            );
+        }
+        self.baseline(start - 1)
+    }
+
     pub fn baseline(&self, start: usize) -> Result<f64> {
         let first = self
             .baseline

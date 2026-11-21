@@ -440,7 +440,7 @@ fn recent_reuses_dev_holding_and_restarts_tax_and_wealth() {
                 legs
             })
             .to_vec(),
-        baseline: vec![],
+        baseline: [100.0, 100.0, 100.0, 120.0, 132.0].map(Some).to_vec(),
     };
     let mut s = empty_schedule(5);
     s.actions[0][0] = Some(Action::Report(1));
@@ -449,5 +449,6 @@ fn recent_reuses_dev_holding_and_restarts_tax_and_wealth() {
     let reused_return = 0.2 / (1.0 - 0.001 / 100.0 - 0.1);
     near(run.days[3].after, reused_return);
     near(segment, 1.0 + reused_return * (1.0 - 0.20315));
+    near(market.recent_baseline(3).unwrap(), 1.32);
     assert_eq!(run.fills, 1);
 }
