@@ -992,3 +992,63 @@ def test_tax_debit_changes_next_equity_but_not_held_notional():
     assert jan1["notional"] == pytest.approx(2 * after_tax)
     assert path[3][1] == pytest.approx(0.1 / after_tax)
     assert path[3][2] == pytest.approx(after_tax + 0.1)
+
+
+@pytest.mark.parametrize("window", [52, 156])
+def test_z_window_excludes_reports_not_yet_usable(monkeypatch, window):
+    from datetime import date, timedelta
+
+    import s002
+
+    days = [date(2016, 1, 1) + timedelta(days=i) for i in range(1300)]
+    first_report = date(2019, 3, 19) - timedelta(weeks=window - 1)
+    reports = {
+        "JPY": [(first_report + timedelta(weeks=i), i / 100) for i in range(window)]
+    }
+    prices = {"JPY": dict.fromkeys(days, 100.0)}
+    rates = {"JPY": {date(2017, 1, 1): 1.0}, "USD": {date(2017, 1, 1): 1.0}}
+    monkeypatch.setattr(
+        s002,
+        "size_positions",
+        lambda day, directions, prices, universe: dict.fromkeys(directions, 1.0),
+    )
+
+    def march_26_direction():
+        actions = s002.signals(
+            f"z{window}-b0-h1-jpy", reports, days, prices, rates, days[0]
+        )
+        return next(row[2]["JPY"] for row in actions if row[0] == date(2019, 3, 26))
+
+    correct = march_26_direction()
+    monkeypatch.setattr(
+        s002,
+        "public_and_signal",
+        lambda asof, calendar: (asof + timedelta(days=6), asof + timedelta(days=7)),
+    )
+    mutant = march_26_direction()
+    assert correct == 0
+    assert mutant != 0
+
+
+@pytest.mark.parametrize("window", [52, 156])
+def test_shifted_z_signal_is_cash_until_backlog_is_usable(monkeypatch, window):
+    from datetime import date, timedelta
+
+    import s002
+
+    days = [date(2016, 1, 1) + timedelta(days=i) for i in range(1300)]
+    first = date(2019, 3, 19) - timedelta(weeks=window - 1)
+    reports = {"JPY": [(first + timedelta(weeks=i), i / 100) for i in range(window)]}
+    prices = {"JPY": dict.fromkeys(days, 100.0)}
+    rates = {"JPY": {date(2015, 1, 1): 1.0}, "USD": {date(2015, 1, 1): 1.0}}
+    raw = [(date(2019, 3, 20), {"JPY": date(2019, 3, 21)}, {"JPY": 1}, {"JPY": 1.0})]
+    monkeypatch.setattr(
+        s002,
+        "size_positions",
+        lambda day, directions, prices, universe: dict.fromkeys(directions, 1.0),
+    )
+    shifted = s002.shifted_actions(
+        f"z{window}-b0-h1-jpy", raw, 6, days, reports, prices, rates
+    )
+    assert shifted[0][0] == date(2019, 3, 26)
+    assert shifted[0][2]["JPY"] == 0

@@ -213,6 +213,23 @@ def z_values(
     return result
 
 
+def usable_z(
+    asof: date,
+    day: date,
+    slots: Mapping[int, tuple[float, date]],
+    window: int,
+) -> float | None:
+    index = slot(asof)
+    indices = range(index - window + 1, index + 1)
+    if not all(i in slots and slots[i][1] <= day for i in indices):
+        return None
+    values = [slots[i][0] for i in indices]
+    deviation = statistics.stdev(values)
+    if not math.isfinite(deviation) or deviation <= 0:
+        raise ValueError("invalid z window standard deviation")
+    return (slots[index][0] - statistics.mean(values)) / deviation
+
+
 LEGS = tuple(CODES.values())
 USD_BASE = {"JPY", "CHF", "CAD", "MXN"}
 RATE_CODES = {
@@ -314,7 +331,6 @@ def signals(
     events: dict[date, list[tuple[date, str, float | None]]] = {}
     for leg in legs:
         rows = sorted(latest_slots(reports[leg]).values())
-        zs = {} if signal == "lvl" else z_values(rows, int(signal[1:]))
         usable = []
         for asof, hp in rows:
             try:
@@ -322,10 +338,14 @@ def signals(
             except ValueError:
                 continue
             if signal_day is not None:
-                usable.append(
-                    (asof, public, signal_day, hp if signal == "lvl" else zs[asof])
-                )
-        for asof, public, signal_day, value in usable:
+                usable.append((asof, public, signal_day, hp))
+        available_slots = {slot(asof): (hp, day) for asof, _, day, hp in usable}
+        for asof, public, signal_day, hp in usable:
+            value = (
+                hp
+                if signal == "lvl"
+                else usable_z(asof, signal_day, available_slots, int(signal[1:]))
+            )
             if holding != "h2" or slot(asof) % 2 == 0:
                 events.setdefault(signal_day, []).append((asof, leg, value))
                 if trace_reports is not None:
@@ -676,9 +696,8 @@ def shifted_actions(
     availability: dict[str, list[tuple[date, date, bool]]] = {}
     for leg in legs:
         rows = sorted(latest_slots(reports[leg]).values())
-        zs = {} if signal == "lvl" else z_values(rows, int(signal[1:]))
         history = []
-        for asof, _ in rows:
+        for asof, hp in rows:
             try:
                 public, usable = public_and_signal(
                     asof, market_calendar if market_calendar is not None else calendar
@@ -686,10 +705,17 @@ def shifted_actions(
             except ValueError:
                 continue
             if usable is not None:
-                history.append(
-                    (usable, public, signal == "lvl" or zs[asof] is not None)
-                )
-        availability[leg] = sorted(history)
+                history.append((asof, hp, usable, public))
+        available_slots = {slot(asof): (hp, day) for asof, hp, day, _ in history}
+        availability[leg] = sorted(
+            (
+                day,
+                public,
+                signal == "lvl"
+                or usable_z(asof, day, available_slots, int(signal[1:])) is not None,
+            )
+            for asof, _, day, public in history
+        )
     current = dict.fromkeys(legs, 0)
     result = []
     for day, updates in shift_signal_days(calendar, raw_actions, offset):
