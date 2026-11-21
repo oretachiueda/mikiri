@@ -429,6 +429,7 @@ def simulate_returns(
     trace: list[dict[str, object]] | None = None,
     trace_reports: Mapping[tuple[date, str], list[date]] | None = None,
     before_cost: list[float] | None = None,
+    tax_paid: list[float] | None = None,
 ) -> list[tuple[date, float, float]]:
     from h005 import TaxLedger
 
@@ -560,14 +561,18 @@ def simulate_returns(
         equity += pnl
         if not math.isfinite(equity) or equity <= 0:
             raise ValueError(f"bust on {day}")
+        paid = 0.0
         if tax and (
             i + 1 == len(active_calendar) or active_calendar[i + 1].year != day.year
         ):
             ledger.add(day.year, equity - year_start)
-            equity -= ledger.settle(day.year)
+            paid = ledger.settle(day.year)
+            equity -= paid
             if equity <= 0:
                 raise ValueError(f"bust on {day}")
             year_start = equity
+        if tax_paid is not None:
+            tax_paid.append(paid)
         pretax_equity *= 1 + daily_return
         peak = max(peak, pretax_equity)
         max_dd = max(max_dd, 1 - pretax_equity / peak)
@@ -604,22 +609,31 @@ def tax_wealth(days: list[date], returns: list[float]) -> float:
     return equity
 
 
+def benchmark_series(
+    days: list[date],
+    spy: Mapping[date, float],
+    jpy: Mapping[date, float | None],
+    previous_day: date,
+) -> list[float]:
+    spy_rows = sorted(spy.items())
+    jpy_rows = sorted((day, value) for day, value in jpy.items() if value is not None)
+    levels = []
+    for day in (previous_day, *days):
+        si = bisect.bisect_right(spy_rows, (day, float("inf"))) - 1
+        ji = bisect.bisect_right(jpy_rows, (day, float("inf"))) - 1
+        if si < 0 or ji < 0:
+            raise ValueError("benchmark unavailable")
+        levels.append(spy_rows[si][1] * jpy_rows[ji][1])
+    return [level / levels[0] for level in levels[1:]]
+
+
 def benchmark_wealth(
     days: list[date],
     spy: Mapping[date, float],
     jpy: Mapping[date, float | None],
     previous_day: date,
 ) -> float:
-    spy_rows = sorted(spy.items())
-    jpy_rows = sorted((day, value) for day, value in jpy.items() if value is not None)
-    levels = []
-    for day in (previous_day, days[-1]):
-        si = bisect.bisect_right(spy_rows, (day, float("inf"))) - 1
-        ji = bisect.bisect_right(jpy_rows, (day, float("inf"))) - 1
-        if si < 0 or ji < 0:
-            raise ValueError("benchmark unavailable")
-        levels.append(spy_rows[si][1] * jpy_rows[ji][1])
-    return levels[1] / levels[0]
+    return benchmark_series(days, spy, jpy, previous_day)[-1]
 
 
 def sharpe(returns: list[float]) -> float:
@@ -697,6 +711,7 @@ def shifted_actions(
     prices: Mapping[str, Mapping[date, float | None]],
     rates: Mapping[str, Mapping[date, float | None]],
     market_calendar: list[date] | None = None,
+    skipped: list[int] | None = None,
 ) -> list[tuple[date, dict[str, date | None], dict[str, int], dict[str, float]]]:
     signal, _, _, universe = config.split("-")
     legs = ("JPY",) if universe == "jpy" else LEGS
@@ -725,6 +740,7 @@ def shifted_actions(
         )
     current = dict.fromkeys(legs, 0)
     result = []
+    skipped_count = 0
     for day, updates in shift_signal_days(calendar, raw_actions, offset):
         for leg, q in updates.items():
             history = [entry for entry in availability[leg] if entry[0] <= day]
@@ -745,10 +761,17 @@ def shifted_actions(
             fixes = sorted(
                 d for d, value in prices[leg].items() if d > day and value is not None
             )
-            fills[leg] = fixes[0] if fixes else None
+            fill_day = fixes[0] if fixes else None
+            fills[leg] = fill_day
             directions[leg] = current[leg] if sizes[leg] else 0
             leverage[leg] = sizes[leg]
+            if updates[leg] and (
+                not directions[leg] or fill_day is None or fill_day > calendar[-1]
+            ):
+                skipped_count += 1
         result.append((day, fills, directions, leverage))
+    if skipped is not None:
+        skipped.append(skipped_count)
     return result
 
 
@@ -763,10 +786,12 @@ def d_control(
     rates: Mapping[str, Mapping[date, float | None]],
     actual_sr: float,
     market_calendar: list[date] | None = None,
+    draws: list[tuple[int, float, int]] | None = None,
 ) -> tuple[int, list[int]]:
     offsets = d_offsets(len(calendar))
     count = 0
     for offset in offsets:
+        skipped: list[int] = []
         actions = shifted_actions(
             config,
             raw_actions,
@@ -776,9 +801,13 @@ def d_control(
             prices,
             rates,
             market_calendar,
+            skipped,
         )
         path = simulate_returns(calendar, actions, prices, rates, calendar[0], tax=True)
-        count += sharpe([daily for _, daily, _ in path]) < actual_sr
+        shifted_sr = sharpe([daily for _, daily, _ in path])
+        count += shifted_sr < actual_sr
+        if draws is not None:
+            draws.append((offset, shifted_sr / math.sqrt(252), skipped[0]))
     return count, offsets[:10]
 
 
@@ -909,6 +938,7 @@ def run_dev(
     trace_rows: list[dict[str, object]] = []
     trace_reports: dict[tuple[date, str], list[date]] = {}
     paths: dict[str, list[float]] = {}
+    accounts: dict[str, tuple[list[tuple[date, float, float]], list[float]]] = {}
     wealth: dict[str, tuple[float, float]] = {}
     rows = []
     for config in configs:
@@ -922,6 +952,7 @@ def run_dev(
         )
         stats: dict[str, float] = {}
         before_cost: list[float] = []
+        tax_paid: list[float] = []
         dev = simulate_returns(
             calendar,
             actions,
@@ -932,9 +963,11 @@ def run_dev(
             trace=trace_rows if config == trace_config else None,
             trace_reports=trace_reports,
             before_cost=before_cost,
+            tax_paid=tax_paid,
         )
         returns = [r for _, r, _ in dev]
         paths[config] = returns
+        accounts[config] = (dev, tax_paid)
         wealth[config] = (
             dev[-1][2],
             tax_wealth(calendar[c_index:], returns[c_index:]),
@@ -965,13 +998,22 @@ def run_dev(
     gates: dict[str, bool | None] = dict(base_gates)
     actual_sr = sharpe(paths[winner])
     output_values: dict[str, object] = dict(values)
+    draws: list[tuple[int, float, int]] = []
     if skip_d:
         gates["D"] = None
         output_values.update(d_count_below=None, d_offsets_first10=None)
     else:
         raw = signals(winner, reports, market_calendar, prices, rates, raw=True)
         count, first = d_control(
-            winner, raw, calendar, reports, prices, rates, actual_sr, market_calendar
+            winner,
+            raw,
+            calendar,
+            reports,
+            prices,
+            rates,
+            actual_sr,
+            market_calendar,
+            draws,
         )
         gates["D"] = count >= 950
         output_values.update(d_count_below=count, d_offsets_first10=first)
@@ -1025,6 +1067,25 @@ def run_dev(
             writer.writerow(
                 [day.isoformat(), *(repr(paths[config][i]) for config in configs)]
             )
+    winner_path, winner_tax = accounts[winner]
+    benchmark = benchmark_series(
+        calendar, spy_values, prices["JPY"], market_calendar[dev_index - 1]
+    )
+    with (out / "equity.csv").open("w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["date", "equity_after_tax", "tax_paid", "B"])
+        for (day, _, account_equity), paid, b in zip(
+            winner_path, winner_tax, benchmark, strict=True
+        ):
+            writer.writerow(
+                [day.isoformat(), repr(account_equity), repr(paid), repr(b)]
+            )
+    if not skip_d:
+        with (out / "d_shifts.csv").open("w", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["draw", "offset", "shifted_sr_daily", "skipped_actions"])
+            for index, (offset, sr, skipped_count) in enumerate(draws, 1):
+                writer.writerow([index, offset, repr(sr), skipped_count])
     if trace_config is not None:
         fields = [
             "date",

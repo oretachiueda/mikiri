@@ -564,7 +564,9 @@ def test_d_control_runs_all_shifted_paths(monkeypatch):
     monkeypatch.setattr(
         s002,
         "shifted_actions",
-        lambda config, raw, offset, *args: seen.append(offset) or [],
+        lambda config, raw, offset, *args: (
+            seen.append(offset) or args[-1].append(offset % 3) or []
+        ),
     )
     monkeypatch.setattr(
         s002,
@@ -574,11 +576,15 @@ def test_d_control_runs_all_shifted_paths(monkeypatch):
             or [(None, -0.01, 1.0), (None, 0.02, 1.0)]
         ),
     )
+    draws = []
     count, first = s002.d_control(
-        "lvl-b0-h1-jpy", [], [date(2020, 1, 1)], {}, {}, {}, 100.0
+        "lvl-b0-h1-jpy", [], [date(2020, 1, 1)], {}, {}, {}, 100.0, draws=draws
     )
     assert count == 1000 and seen == offsets and first == offsets[:10]
     assert tax_modes == [True] * 1000
+    assert [offset for offset, _, _ in draws] == offsets
+    assert draws[5][2] == 2
+    assert draws[5][1] == pytest.approx(0.005 / (0.03 / 2**0.5))
 
 
 def test_load_inputs_hashes_all_synthetic_sources(tmp_path):
@@ -645,7 +651,12 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
             [{"date": str(d), "adjClose": 100 + i / 10} for i, d in enumerate(days)]
         )
     )
-    monkeypatch.setattr(s002, "d_control", lambda *args: (950, list(range(10))))
+
+    def fake_d(*args):
+        args[-1].extend((i + 252, i / 1000, i % 3) for i in range(1000))
+        return 950, list(range(252, 262))
+
+    monkeypatch.setattr(s002, "d_control", fake_d)
     simulate = s002.simulate_returns
     tax_modes = []
 
@@ -682,6 +693,44 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
     assert set(summary["gates"]) == {"A", "B1", "B2", "C", "D"}
     assert summary["winner"] in {row["config"] for row in results}
     assert len(summary["input_sha256"]) == 19
+    with (out / "d_shifts.csv").open() as stream:
+        shifts = list(csv.DictReader(stream))
+    assert len(shifts) == 1000
+    assert shifts[0] == {
+        "draw": "1",
+        "offset": "252",
+        "shifted_sr_daily": "0.0",
+        "skipped_actions": "0",
+    }
+    assert shifts[-1]["draw"] == "1000" and shifts[-1]["offset"] == "1251"
+    with (out / "equity.csv").open() as stream:
+        equity = list(csv.DictReader(stream))
+    assert len(equity) == len(daily)
+    assert list(equity[0]) == ["date", "equity_after_tax", "tax_paid", "B"]
+    prior = 1.0
+    for account, returns in zip(equity, daily, strict=True):
+        assert account["date"] == returns["date"]
+        assert float(account["equity_after_tax"]) == pytest.approx(
+            prior * (1 + float(returns[summary["winner"]])) - float(account["tax_paid"])
+        )
+        prior = float(account["equity_after_tax"])
+    assert prior == pytest.approx(summary["values"]["W_dev"])
+    assert any(float(account["tax_paid"]) > 0 for account in equity)
+    for index, account in enumerate(equity):
+        if float(account["tax_paid"]) != 0:
+            assert (
+                index == len(equity) - 1
+                or account["date"][:4] != equity[index + 1]["date"][:4]
+            )
+    first_i = days.index(date(1996, 1, 2))
+    first_b = (
+        (100 + first_i / 10)
+        / (100 + (first_i - 1) / 10)
+        * math.exp(
+            0.0001 + 0.003 * (math.sin(first_i / 3) - math.sin((first_i - 1) / 3))
+        )
+    )
+    assert float(equity[0]["B"]) == pytest.approx(first_b)
     trace_out = tmp_path / "trace"
 
     def unexpected_d(*args):
@@ -739,6 +788,8 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
     )
     assert json.loads((no_trace_out / "summary.json").read_text())["gates"]["D"] is None
     assert not list(no_trace_out.glob("trace-*.csv"))
+    assert not (no_trace_out / "d_shifts.csv").exists()
+    assert (no_trace_out / "equity.csv").exists()
 
 
 def test_fx8_sizes_only_legs_acting_on_the_day(monkeypatch):
@@ -1118,3 +1169,56 @@ def test_before_cost_returns_use_actual_taxed_account_and_positions():
         days, actions, prices, rates, days[0], tax=True, costs=False
     )
     assert before[3] != pytest.approx(separate[3][1], abs=1e-8)
+
+
+def test_shifted_skipped_actions_count_inactive_and_end_boundary():
+    import math
+    from datetime import date, timedelta
+
+    from s002 import shifted_actions
+
+    days = [date(2020, 1, 1) + timedelta(days=i) for i in range(100)]
+    prices = {"JPY": {d: 100 * math.exp(0.001 * (i % 3)) for i, d in enumerate(days)}}
+    rates = {"JPY": {date(2019, 1, 1): 1.0}, "USD": {date(2019, 1, 1): 1.0}}
+    reports = {"JPY": [(days[55], 0.5)]}
+    raw = [(days[50], {"JPY": days[51]}, {"JPY": -1}, {"JPY": 1.0})]
+    for offset, expected in [(1, 1), (17, 0), (49, 1)]:
+        skipped = []
+        shifted_actions(
+            "lvl-b0-h1-jpy", raw, offset, days, reports, prices, rates, skipped=skipped
+        )
+        assert skipped == [expected]
+    exit_signal = [(days[50], {"JPY": days[51]}, {"JPY": 0}, {"JPY": 0.0})]
+    skipped = []
+    shifted_actions(
+        "lvl-b0-h1-jpy", exit_signal, 49, days, reports, prices, rates, skipped=skipped
+    )
+    assert skipped == [0]
+
+
+def test_d_draws_match_real_shifted_account_paths(monkeypatch):
+    import math
+
+    import s002
+
+    days, reports, prices, rates, _ = synthetic_gym(1229)
+    config = "lvl-b0-h1-jpy"
+    raw = s002.signals(config, reports, days, prices, rates, days[0], raw=True)
+    offsets = [20, 30]
+    monkeypatch.setattr(s002, "d_offsets", lambda _: offsets)
+    draws = []
+    count, first = s002.d_control(
+        config, raw, days, reports, prices, rates, 0.0, draws=draws
+    )
+    assert first == offsets
+    expected = []
+    for offset in offsets:
+        skipped = []
+        actions = s002.shifted_actions(
+            config, raw, offset, days, reports, prices, rates, skipped=skipped
+        )
+        path = s002.simulate_returns(days, actions, prices, rates, days[0], tax=True)
+        daily_sr = s002.sharpe([row[1] for row in path]) / math.sqrt(252)
+        expected.append((offset, daily_sr, skipped[0]))
+    assert draws == expected
+    assert count == sum(sr < 0 for _, sr, _ in expected)
