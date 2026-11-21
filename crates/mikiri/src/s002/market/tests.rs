@@ -530,6 +530,7 @@ fn staggered_report_sizes_and_fills_only_the_legs_acting_that_day() {
         (0.02 + 0.02 * after_jpy_entry) / after_eur_entry,
     );
     assert_eq!(run.entries, 2);
+    near(run.max_gross, 2.0);
 }
 
 #[test]

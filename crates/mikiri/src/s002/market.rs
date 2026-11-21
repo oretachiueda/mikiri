@@ -418,7 +418,7 @@ pub(super) fn simulate_with_trace(
         let mut before = 0.0;
         let mut after = 0.0;
         let previous_equity = account.equity;
-        let mut gross_at_fixes = 0.0;
+        let mut filled_target = false;
         let source = market.start + (index - market.start + t - offset) % t;
         let actions = schedule.actions[source];
         let trace_start = trace.as_ref().map_or(0, |rows| rows.len());
@@ -438,7 +438,7 @@ pub(super) fn simulate_with_trace(
                 after += leg_pnl.after;
                 account.entries += leg_pnl.entries;
                 if let Some(leverage) = filled_leverage {
-                    gross_at_fixes += leverage.abs();
+                    filled_target = true;
                     held[leg] = leverage * previous_equity;
                     held_leverage[leg] = leverage.abs();
                 }
@@ -470,7 +470,9 @@ pub(super) fn simulate_with_trace(
                 }
             }
         }
-        account.max_gross = account.max_gross.max(gross_at_fixes);
+        if filled_target {
+            account.max_gross = account.max_gross.max(held_leverage.iter().sum());
+        }
         let daily_return = after / previous_equity;
         if let Some(trace) = trace.as_deref_mut() {
             for row in &mut trace[trace_start..] {
