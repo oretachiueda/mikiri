@@ -712,3 +712,163 @@ def test_entry_count_and_target_gross_at_fills():
     assert details["max_gross"] == 3
     assert details["max_dd"] == pytest.approx(1 - min(row[2] for row in path))
     assert details["max_dd"] > 0
+
+
+def synthetic_gym(seed, edge=False):
+    import math
+    import random
+    from datetime import date, timedelta
+
+    import s002
+
+    rng = random.Random(seed)
+    start = date(2020, 1, 1)
+    days = [start + timedelta(days=i) for i in range(380)]
+    first_report = date(2016, 12, 27)
+    report_days = [first_report + timedelta(weeks=i) for i in range(215)]
+    reports = {
+        leg: [(day, rng.uniform(-0.9, 0.9)) for day in report_days] for leg in s002.LEGS
+    }
+    prices = {}
+    for leg in s002.LEGS:
+        value = 100.0
+        series = {}
+        for day in days:
+            available = [
+                hp for asof, hp in reports[leg] if asof + timedelta(days=9) <= day
+            ]
+            q = s002.direction(available[-1], "lvl", "b0", leg) if available else 0
+            value *= math.exp(rng.gauss(0, 0.008) + (0.004 * q if edge else 0))
+            series[day] = value
+        prices[leg] = series
+    rates = {leg: {date(2019, 1, 1): 0.0} for leg in (*s002.LEGS, "USD")}
+    spy = {day: 100.0 + i for i, day in enumerate(days)}
+    return days, reports, prices, rates, spy
+
+
+def gym_paths(seed, edge=False):
+    import itertools
+
+    import s002
+
+    days, reports, prices, rates, _ = synthetic_gym(seed, edge)
+    paths = {}
+    for parts in itertools.product(
+        ("lvl", "z52", "z156"), ("b0", "b1"), ("h1", "h2"), ("jpy", "fx8")
+    ):
+        config = "-".join(parts)
+        actions = s002.signals(config, reports, days, prices, rates, days[0])
+        paths[config] = [
+            value
+            for _, value, _ in s002.simulate_returns(
+                days, actions, prices, rates, start=days[0], costs=False
+            )
+        ]
+    return paths
+
+
+def test_g1_no_edge_each_config_pooled_seeds():
+    import math
+    import statistics
+
+    runs = [gym_paths(seed) for seed in (103, 211, 307)]
+    for config in runs[0]:
+        values = [value for run in runs for value in run[config]]
+        se = statistics.stdev(values) / math.sqrt(len(values))
+        assert abs(statistics.mean(values) / se) < 3, config
+
+
+def test_g3_planted_edge_exceeds_no_edge():
+    import s002
+
+    config = "lvl-b0-h1-jpy"
+    planted = s002.sharpe(gym_paths(103, edge=True)[config])
+    baseline = [s002.sharpe(gym_paths(seed)[config]) for seed in (103, 211, 307)]
+    assert planted > 2.0
+    assert planted > max(baseline)
+
+
+def test_g5_public_date_lookahead_mutant_changes_returns(monkeypatch):
+    import s002
+
+    days, reports, prices, rates, _ = synthetic_gym(911, edge=True)
+    config = "lvl-b0-h1-jpy"
+
+    def run():
+        actions = s002.signals(config, reports, days, prices, rates, days[0])
+        return [
+            r
+            for _, r, _ in s002.simulate_returns(
+                days, actions, prices, rates, days[0], costs=False
+            )
+        ]
+
+    correct = run()
+    public_and_signal = s002.public_and_signal
+
+    def mutant(asof, calendar):
+        public, _ = public_and_signal(asof, calendar)
+        return public, public
+
+    monkeypatch.setattr(s002, "public_and_signal", mutant)
+    assert run() != correct
+
+
+def test_r13_pipeline_future_input_changes_do_not_change_past():
+    from datetime import date
+
+    import s002
+
+    days, reports, prices, rates, spy = synthetic_gym(617)
+    cutoff = days[250]
+    for series in rates.values():
+        series[date(2020, 11, 1)] = 2.0
+        series[date(2020, 12, 1)] = 3.0
+
+    def trace(reports, prices, rates, spy):
+        actions = s002.signals("lvl-b0-h1-fx8", reports, days, prices, rates, days[0])
+        path = s002.simulate_returns(days, actions, prices, rates, days[0])
+        prefix_actions = [row for row in actions if row[0] <= cutoff]
+        prefix_returns = [row for row in path if row[0] <= cutoff]
+        positions = {leg: 0.0 for leg in s002.LEGS}
+        position_history = []
+        fills = {}
+        for signal_day, dates, directions, sizes in actions:
+            for leg, fill_day in dates.items():
+                if fill_day is not None:
+                    fills.setdefault(fill_day, {})[leg] = (
+                        signal_day,
+                        directions[leg],
+                        sizes[leg],
+                    )
+        equity = 1.0
+        for day, _, next_equity in path:
+            for leg, (_, direction, size) in fills.get(day, {}).items():
+                positions[leg] = direction * size * equity
+            if day <= cutoff:
+                position_history.append(dict(positions))
+            equity = next_equity
+        benchmark = s002.benchmark_wealth(days[1:251], spy, prices["JPY"], days[0])
+        return prefix_actions, prefix_returns, position_history, benchmark
+
+    original = trace(reports, prices, rates, spy)
+    changed_reports = {
+        leg: [(day, -value if day > cutoff else value) for day, value in rows]
+        for leg, rows in reports.items()
+    }
+    changed_prices = {
+        leg: {
+            day: value * 1.3 if day > cutoff else value for day, value in rows.items()
+        }
+        for leg, rows in prices.items()
+    }
+    changed_rates = {
+        leg: {day: value + 5 if day > cutoff else value for day, value in rows.items()}
+        for leg, rows in rates.items()
+    }
+    changed_spy = {
+        day: value * 2 if day > cutoff else value for day, value in spy.items()
+    }
+    assert (
+        trace(changed_reports, changed_prices, changed_rates, changed_spy) == original
+    )
