@@ -649,3 +649,28 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
     assert set(summary["gates"]) == {"A", "B1", "B2", "C", "D"}
     assert summary["winner"] in {row["config"] for row in results}
     assert len(summary["input_sha256"]) == 19
+
+
+def test_fx8_sizes_only_legs_acting_on_the_day(monkeypatch):
+    from datetime import date, timedelta
+
+    import s002
+
+    start = date(2020, 1, 1)
+    days = [start + timedelta(days=i) for i in range(100)]
+    reports = {leg: [] for leg in s002.LEGS}
+    reports["JPY"] = [(date(2020, 3, 3), 0.5)]
+    reports["EUR"] = [(date(2020, 3, 10), 0.5)]
+    prices = {leg: dict.fromkeys(days, 100.0) for leg in s002.LEGS}
+    rates = {leg: {date(2019, 1, 1): 1.0} for leg in (*s002.LEGS, "USD")}
+    seen = []
+
+    def sizes(day, directions, prices, universe):
+        seen.append((day, dict(directions)))
+        return dict.fromkeys(directions, 1.0)
+
+    monkeypatch.setattr(s002, "size_positions", sizes)
+    actions = s002.signals("lvl-b0-h1-fx8", reports, days, prices, rates, start)
+    eur_day = date(2020, 3, 17)
+    assert dict(seen)[eur_day] == {"EUR": 1}
+    assert next(action for action in actions if action[0] == eur_day)[2] == {"EUR": 1}

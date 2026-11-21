@@ -350,6 +350,7 @@ def signals(
         active = {
             leg: q if has_rate(rates[leg], day) and has_rate(rates["USD"], day) else 0
             for leg, q in current.items()
+            if leg in acted
         }
         sizes = size_positions(day, active, prices, universe)
         fills = {}
