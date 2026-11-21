@@ -1083,3 +1083,38 @@ def test_gross_leverage_measures_book_after_all_same_day_fills():
     actions[1] = (days[1], {"JPY": days[2]}, {"JPY": 1}, {"JPY": 2.0})
     simulate_returns(days, actions, prices, rates, start, costs=False, details=details)
     assert details["max_gross"] == 3.0
+
+
+def test_before_cost_returns_use_actual_taxed_account_and_positions():
+    from datetime import date
+
+    from s002 import simulate_returns
+
+    days = [
+        date(2020, 12, 29),
+        date(2020, 12, 30),
+        date(2020, 12, 31),
+        date(2021, 1, 1),
+        date(2021, 1, 2),
+    ]
+    prices = {"JPY": dict(zip(days, [100.0, 110.0, 121.0, 133.1, 146.41], strict=True))}
+    rates = {"JPY": {date(2020, 1, 1): 1.0}, "USD": {date(2020, 1, 1): 5.0}}
+    actions = [
+        (date(2020, 12, 28), {"JPY": days[0]}, {"JPY": 1}, {"JPY": 1.0}),
+        (days[2], {"JPY": days[3]}, {"JPY": 1}, {"JPY": 2.0}),
+    ]
+    before = []
+    trace = []
+    path = simulate_returns(
+        days, actions, prices, rates, days[0], tax=True, before_cost=before, trace=trace
+    )
+    jan1 = next(row for row in trace if row["date"] == days[3])
+    previous_equity = path[2][2]
+    assert before[0] == 0
+    assert before[3] == pytest.approx((0.1 + 0.04 / 365) / previous_equity)
+    assert jan1["notional"] == pytest.approx(2 * previous_equity)
+    assert before[3] > path[3][1]
+    separate = simulate_returns(
+        days, actions, prices, rates, days[0], tax=True, costs=False
+    )
+    assert before[3] != pytest.approx(separate[3][1], abs=1e-8)

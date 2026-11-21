@@ -428,6 +428,7 @@ def simulate_returns(
     details: dict[str, float] | None = None,
     trace: list[dict[str, object]] | None = None,
     trace_reports: Mapping[tuple[date, str], list[date]] | None = None,
+    before_cost: list[float] | None = None,
 ) -> list[tuple[date, float, float]]:
     from h005 import TaxLedger
 
@@ -453,6 +454,7 @@ def simulate_returns(
     signal_legs = {(day, leg) for day, dates, _, _ in actions for leg in dates}
     for i, day in enumerate(active_calendar):
         pnl = 0.0
+        gross_pnl = 0.0
         trace_day: list[dict[str, object]] = []
         for leg, series in prices.items():
             price = series.get(day)
@@ -487,15 +489,19 @@ def simulate_returns(
                 previous_day, previous_price = prior
                 spot_ret = price / previous_price - 1
                 pnl += notional * spot_ret
+                gross_pnl += notional * spot_ret
                 held = "USD" if (notional > 0) == (leg in USD_BASE) else leg
                 sold = leg if held == "USD" else "USD"
                 for offset in range(1, (day - previous_day).days + 1):
                     accrual_day = previous_day + timedelta(days=offset)
+                    rate_difference = rate_for_day(
+                        rates[held], accrual_day
+                    ) - rate_for_day(rates[sold], accrual_day)
+                    gross_pnl += abs(notional) * rate_difference / 365
                     amount = (
                         abs(notional)
                         * (
-                            rate_for_day(rates[held], accrual_day)
-                            - rate_for_day(rates[sold], accrual_day)
+                            rate_difference
                             - ((0.02 if leg == "MXN" else 0.0135) if costs else 0.0)
                         )
                         / 365
@@ -545,6 +551,8 @@ def simulate_returns(
         if day in fills:
             max_gross = max(max_gross, sum(abs(v) for v in target_leverage.values()))
         daily_return = pnl / equity
+        if before_cost is not None:
+            before_cost.append(gross_pnl / equity)
         if trace is not None:
             for row in trace_day:
                 row["daily_return"] = daily_return
@@ -913,6 +921,7 @@ def run_dev(
             trace_reports=trace_reports if config == trace_config else None,
         )
         stats: dict[str, float] = {}
+        before_cost: list[float] = []
         dev = simulate_returns(
             calendar,
             actions,
@@ -922,8 +931,8 @@ def run_dev(
             tax=True,
             trace=trace_rows if config == trace_config else None,
             trace_reports=trace_reports,
+            before_cost=before_cost,
         )
-        pre = simulate_returns(calendar, actions, prices, rates, tax=True, costs=False)
         returns = [r for _, r, _ in dev]
         paths[config] = returns
         wealth[config] = (
@@ -935,7 +944,7 @@ def run_dev(
             {
                 "config": config,
                 "sr_after": sharpe(returns),
-                "sr_before": sharpe([r for _, r, _ in pre]),
+                "sr_before": sharpe(before_cost),
                 "trades_per_year": stats["trades"] / years,
                 "max_gross_L": stats["max_gross"],
                 "max_dd": stats["max_dd"],
