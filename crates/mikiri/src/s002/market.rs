@@ -93,16 +93,14 @@ impl Market {
         }
         let mut legs = vec![[LegDay::default(); LEGS]; dates.len()];
         let mut baseline = Vec::with_capacity(dates.len());
-        let mut last_baseline = None;
         for &day in &dates {
-            if let (Some(&spy), Some(&jpy)) = (input.spy.get(&day), input.fixes[0].get(&day)) {
-                let value = spy * jpy;
-                if !value.is_finite() || value <= 0.0 {
-                    return Err("invalid JPY SPY baseline".into());
-                }
-                last_baseline = Some(value);
+            let spy = input.spy.range(..=day).next_back();
+            let jpy = input.fixes[0].range(..=day).next_back();
+            let value = spy.zip(jpy).map(|((_, spy), (_, jpy))| spy * jpy);
+            if value.is_some_and(|value| !value.is_finite() || value <= 0.0) {
+                return Err("invalid JPY SPY baseline".into());
             }
-            baseline.push(last_baseline);
+            baseline.push(value);
         }
         for (leg, prices) in input.fixes.iter().enumerate() {
             let mut previous = None;

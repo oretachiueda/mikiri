@@ -351,7 +351,7 @@ fn no_edge_and_planted_edge_are_distinguished_g1_g3() {
 }
 
 #[test]
-fn dev_starts_flat_and_benchmark_carries_last_joint_value() {
+fn dev_starts_flat_and_benchmark_carries_each_series_independently() {
     let mut input = empty_inputs();
     let dates = [
         date(1996, 1, 1),
@@ -366,8 +366,8 @@ fn dev_starts_flat_and_benchmark_carries_last_joint_value() {
         .extend([(dates[0], 2.0), (dates[2], 3.0), (dates[3], 4.0)]);
     let market = Market::new(&input).unwrap();
     assert_eq!(market.dates[market.start], DEV_START);
-    near(market.baseline(market.start).unwrap(), 375.0 / 200.0);
-    near(market.baseline(2).unwrap(), 1.0);
+    near(market.baseline(market.start).unwrap(), 500.0 / 190.0);
+    near(market.baseline(2).unwrap(), 500.0 / 375.0);
     let mut signals = empty_schedule(4);
     signals.actions[0][0] = Some(Action::Report(1));
     assert!(
@@ -377,6 +377,17 @@ fn dev_starts_flat_and_benchmark_carries_last_joint_value() {
             .iter()
             .all(|day| day.after == 0.0)
     );
+}
+
+#[test]
+fn benchmark_carries_spy_from_an_earlier_non_calendar_date() {
+    let mut input = empty_inputs();
+    input.fixes[0].extend([(DEV_START, 100.0), (date(1996, 1, 4), 90.0)]);
+    input
+        .spy
+        .extend([(DEV_START, 2.0), (date(1996, 1, 3), 3.0)]);
+    let market = Market::new(&input).unwrap();
+    near(market.baseline(market.start).unwrap(), 270.0 / 200.0);
 }
 
 #[test]
