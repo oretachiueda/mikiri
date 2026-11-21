@@ -425,3 +425,27 @@ def test_circular_shift_preserves_leg_directions_and_exits():
         (days[1], {"JPY": 0}),
         (days[3], {"JPY": -1}),
     ]
+
+
+def test_tax_reduces_equity_before_later_sizing():
+    from datetime import date
+
+    from s002 import simulate_returns
+
+    days = [
+        date(2020, 12, 29),
+        date(2020, 12, 30),
+        date(2020, 12, 31),
+        date(2021, 1, 4),
+        date(2021, 1, 5),
+    ]
+    prices = {"JPY": dict(zip(days, [100.0, 100.0, 110.0, 110.0, 121.0], strict=True))}
+    rates = {"USD": {date(2020, 1, 1): 1.35}, "JPY": {date(2020, 1, 1): 0.0}}
+    actions = [
+        (days[0], {"JPY": days[1]}, {"JPY": 1}, {"JPY": 1.0}),
+        (days[2], {"JPY": days[3]}, {"JPY": 1}, {"JPY": 1.0}),
+    ]
+    taxed = simulate_returns(days, actions, prices, rates, days[0], tax=True)
+    pretax = simulate_returns(days, actions, prices, rates, days[0])
+    assert taxed[2][2] < pretax[2][2]
+    assert taxed[4][2] < pretax[4][2]

@@ -393,7 +393,12 @@ def simulate_returns(
     prices: Mapping[str, Mapping[date, float | None]],
     rates: Mapping[str, Mapping[date, float | None]],
     start: date = date(1996, 1, 2),
+    tax: bool = False,
 ) -> list[tuple[date, float, float]]:
+    from h005 import TaxLedger
+
+    ledger = TaxLedger()
+    year_start = 1.0
     fills: dict[date, dict[str, tuple[int, float]]] = {}
     for signal_day, dates, directions, sizes in sorted(
         actions, key=lambda action: action[0]
@@ -407,9 +412,8 @@ def simulate_returns(
     previous_fix: dict[str, tuple[date, float]] = {}
     equity = 1.0
     result = []
-    for day in calendar:
-        if day < start:
-            continue
+    active_calendar = [day for day in calendar if day >= start]
+    for i, day in enumerate(active_calendar):
         pnl = 0.0
         for leg, series in prices.items():
             price = series.get(day)
@@ -443,6 +447,14 @@ def simulate_returns(
         equity += pnl
         if not math.isfinite(equity) or equity <= 0:
             raise ValueError(f"bust on {day}")
+        if tax and (
+            i + 1 == len(active_calendar) or active_calendar[i + 1].year != day.year
+        ):
+            ledger.add(day.year, equity - year_start)
+            equity -= ledger.settle(day.year)
+            if equity <= 0:
+                raise ValueError(f"bust on {day}")
+            year_start = equity
         result.append((day, daily_return, equity))
     return result
 
