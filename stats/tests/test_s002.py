@@ -1222,3 +1222,78 @@ def test_d_draws_match_real_shifted_account_paths(monkeypatch):
         expected.append((offset, daily_sr, skipped[0]))
     assert draws == expected
     assert count == sum(sr < 0 for _, sr, _ in expected)
+
+
+@pytest.mark.parametrize("holding", ["h1", "h2"])
+def test_stale_boundary_uses_inclusive_public_date(monkeypatch, holding):
+    from datetime import date, timedelta
+
+    import s002
+
+    first_report = date(1997, 12, 9)
+    second_report = date(1997, 12, 23)
+    deadline = date(1997, 12, 29)
+    start = date(1997, 11, 1)
+    days = [start + timedelta(days=i) for i in range(90)]
+    reports = {"JPY": [(first_report, 0.5), (second_report, -0.5)]}
+    prices = {"JPY": dict.fromkeys(days, 100.0)}
+    rates = {"JPY": {date(1997, 1, 1): 1.0}, "USD": {date(1997, 1, 1): 1.0}}
+    monkeypatch.setattr(
+        s002,
+        "size_positions",
+        lambda day, directions, prices, universe: dict.fromkeys(directions, 1.0),
+    )
+
+    def actions(calendar):
+        return s002.signals(
+            f"lvl-b0-{holding}-jpy", reports, calendar, prices, rates, start
+        )
+
+    assert s002.public_and_signal(first_report, days)[0] == date(1997, 12, 15)
+    assert s002.public_and_signal(second_report, days)[0] == deadline
+    assert (
+        next(row for row in actions(days) if row[0] == date(1997, 12, 16))[2]["JPY"]
+        == -1
+    )
+    assert (
+        next(row for row in actions(days) if row[0] == date(1997, 12, 30))[2]["JPY"]
+        == 1
+    )
+    assert not any(row[0] == deadline for row in actions(days))
+
+    missing_deadline = [day for day in days if day != deadline]
+    assert s002.public_and_signal(second_report, missing_deadline)[0] == date(
+        1997, 12, 30
+    )
+    exit_action = next(
+        row for row in actions(missing_deadline) if row[0] == date(1997, 12, 30)
+    )
+    assert exit_action[2]["JPY"] == 0
+
+    terminal_days = [day for day in days if day <= deadline]
+    assert not any(row[0] == deadline for row in actions(terminal_days))
+
+
+def test_h2_odd_report_public_on_stale_deadline_prevents_exit(monkeypatch):
+    from datetime import date, timedelta
+
+    import s002
+
+    start = date(1997, 11, 1)
+    days = [start + timedelta(days=i) for i in range(90)]
+    days = [day for day in days if not date(1997, 12, 22) <= day <= date(1997, 12, 28)]
+    reports = {"JPY": [(date(1997, 12, 9), 0.5), (date(1997, 12, 16), -0.5)]}
+    prices = {"JPY": dict.fromkeys(days, 100.0)}
+    rates = {"JPY": {date(1997, 1, 1): 1.0}, "USD": {date(1997, 1, 1): 1.0}}
+    monkeypatch.setattr(
+        s002,
+        "size_positions",
+        lambda day, directions, prices, universe: dict.fromkeys(directions, 1.0),
+    )
+    assert s002.slot(date(1997, 12, 16)) % 2 == 1
+    assert s002.public_and_signal(date(1997, 12, 16), days)[0] == date(1997, 12, 29)
+    actions = s002.signals("lvl-b0-h2-jpy", reports, days, prices, rates, start)
+    assert next(row for row in actions if row[0] == date(1997, 12, 16))[2]["JPY"] == -1
+    assert not any(
+        row[0] in (date(1997, 12, 29), date(1997, 12, 30)) for row in actions
+    )

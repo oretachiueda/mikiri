@@ -332,11 +332,13 @@ def signals(
     for leg in legs:
         rows = sorted(latest_slots(reports[leg]).values())
         usable = []
+        publications = []
         for asof, hp in rows:
             try:
                 public, signal_day = public_and_signal(asof, calendar)
             except ValueError:
                 continue
+            publications.append((public, asof))
             if signal_day is not None:
                 usable.append((asof, public, signal_day, hp))
         available_slots = {slot(asof): (hp, day) for asof, _, day, hp in usable}
@@ -350,13 +352,13 @@ def signals(
                 events.setdefault(signal_day, []).append((asof, leg, value))
                 if trace_reports is not None:
                     trace_reports.setdefault((signal_day, leg), []).append(asof)
-            at = bisect.bisect_left(calendar, public + timedelta(days=14))
+            deadline = public + timedelta(days=14)
+            at = bisect.bisect_left(calendar, deadline)
             if at >= len(calendar):
                 continue
             if any(
-                (other_signal, other_asof) > (signal_day, asof)
-                and other_signal <= calendar[at]
-                for other_asof, _, other_signal, _ in usable
+                (other_public, other_asof) > (public, asof) and other_public <= deadline
+                for other_public, other_asof in publications
             ):
                 continue
             events.setdefault(calendar[at], []).append((asof, leg, None))
