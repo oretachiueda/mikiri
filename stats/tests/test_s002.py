@@ -156,3 +156,104 @@ def test_readers_preserve_earlier_values_when_future_changes(tmp_path):
         read_fred(fred)[day],
         read_spy(spy)[day],
     ) == before
+
+
+def test_direction_bands_and_quote_convention():
+    from s002 import direction
+
+    assert direction(0, "lvl", "b0", "JPY") == 0
+    assert direction(0.1, "lvl", "b1", "EUR") == 0
+    assert direction(-1.0, "z52", "b1", "EUR") == 0
+    for leg in ("JPY", "CHF", "CAD", "MXN"):
+        assert direction(1, "lvl", "b0", leg) == -1
+    for leg in ("EUR", "GBP", "AUD", "NZD"):
+        assert direction(1, "lvl", "b0", leg) == 1
+
+
+def test_sizing_strict_history_joint_days_and_cap():
+    import math
+    from datetime import date, timedelta
+
+    from s002 import fix_returns, size_positions
+
+    start = date(2020, 1, 1)
+    prices = {
+        leg: {
+            start + timedelta(days=i): 100 * math.exp(0.0001 * (i % 3))
+            for i in range(63)
+        }
+        for leg in ("JPY", "EUR")
+    }
+    day = start + timedelta(days=61)
+    assert len(fix_returns(prices["JPY"], day)) == 60
+    assert size_positions(day, {"JPY": 1}, prices, "jpy")["JPY"] == 10
+    before = size_positions(day, {"JPY": 1, "EUR": 1}, prices, "fx8")
+    assert sum(before.values()) == pytest.approx(10)
+    prices["JPY"][day] = 1e8
+    assert size_positions(day, {"JPY": 1, "EUR": 1}, prices, "fx8") == before
+    prices["EUR"].pop(start + timedelta(days=20))
+    assert size_positions(day, {"JPY": 1, "EUR": 1}, prices, "fx8") == {
+        "JPY": 10,
+        "EUR": 0,
+    }
+    with pytest.raises(ValueError, match="volatility"):
+        size_positions(
+            day, {"JPY": 1}, {"JPY": dict.fromkeys(prices["JPY"], 100.0)}, "jpy"
+        )
+
+
+def test_signal_batch_stale_fill_and_h2():
+    import math
+    from datetime import date, timedelta
+
+    from s002 import signals
+
+    start = date(2013, 8, 1)
+    calendar = [start + timedelta(days=i) for i in range(180)]
+    prices = {
+        "JPY": {d: 100 * math.exp(0.001 * (i % 3)) for i, d in enumerate(calendar)}
+    }
+    reports = {"JPY": [(date(2013, 10, 1), 0.5), (date(2013, 10, 8), -0.5)]}
+    rates = {"JPY": {date(2013, 1, 1): 0.01}, "USD": {date(2013, 1, 1): 0.02}}
+    result = signals("lvl-b0-h1-jpy", reports, calendar, prices, rates, start)
+    shutdown = [row for row in result if row[0] == date(2013, 11, 30)]
+    assert len(shutdown) == 1
+    assert shutdown[0][1]["JPY"] == date(2013, 12, 1)
+    assert shutdown[0][2]["JPY"] == 1
+    assert result[-1][0] == date(2013, 12, 13)
+    assert result[-1][2]["JPY"] == 0
+    h2 = signals("lvl-b0-h2-jpy", reports, calendar, prices, rates, start)
+    assert len([row for row in h2 if row[0] == date(2013, 11, 30)]) == 1
+    assert h2[0][2]["JPY"] == 1
+    rates["USD"] = {}
+    assert (
+        signals("lvl-b0-h1-jpy", reports, calendar, prices, rates, start)[0][2]["JPY"]
+        == 0
+    )
+
+
+def test_fx8_incomplete_joint_window_and_zero_portfolio():
+    import math
+    from datetime import date, timedelta
+
+    from s002 import size_positions
+
+    start = date(2020, 1, 1)
+    day = start + timedelta(days=130)
+    prices = {
+        "JPY": {
+            start + timedelta(days=i): 100 * math.exp(0.01 * (i % 3))
+            for i in range(0, 122, 2)
+        },
+        "EUR": {
+            start + timedelta(days=i): 100 * math.exp(0.01 * (i % 3))
+            for i in range(1, 123, 2)
+        },
+    }
+    assert size_positions(day, {"JPY": 1, "EUR": 1}, prices, "fx8") == {
+        "JPY": 0,
+        "EUR": 0,
+    }
+    prices["EUR"] = prices["JPY"].copy()
+    with pytest.raises(ValueError, match="volatility"):
+        size_positions(day, {"JPY": 1, "EUR": -1}, prices, "fx8")

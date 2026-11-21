@@ -3,10 +3,12 @@
 import bisect
 import csv
 import io
+import itertools
 import json
 import math
 import statistics
 import zipfile
+from collections.abc import Mapping
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -158,7 +160,7 @@ def read_spy(path: Path) -> dict[date, float]:
     return values
 
 
-def return_calendar(fred: dict[str, dict[date, float | None]]) -> list[date]:
+def return_calendar(fred: Mapping[str, Mapping[date, float | None]]) -> list[date]:
     return sorted(
         {day for name in FX for day, value in fred[name].items() if value is not None}
     )
@@ -193,11 +195,11 @@ def public_and_signal(day: date, calendar: list[date]) -> tuple[date, date | Non
 
 def z_values(
     reports: list[tuple[date, float]], window: int
-) -> dict[date, float | None]:
+) -> Mapping[date, float | None]:
     if window not in (52, 156):
         raise ValueError("unsupported window")
     slots = latest_slots(reports)
-    result: dict[date, float | None] = {}
+    result: Mapping[date, float | None] = {}
     for index, (day, value) in sorted(slots.items()):
         indices = range(index - window + 1, index + 1)
         if not all(i in slots for i in indices):
@@ -209,3 +211,151 @@ def z_values(
             raise ValueError("invalid z window standard deviation")
         result[day] = (value - statistics.mean(values)) / deviation
     return result
+
+
+LEGS = tuple(CODES.values())
+USD_BASE = {"JPY", "CHF", "CAD", "MXN"}
+RATE_CODES = {
+    "JPY": "JP",
+    "EUR": "EZ",
+    "GBP": "GB",
+    "CHF": "CH",
+    "CAD": "CA",
+    "AUD": "AU",
+    "NZD": "NZ",
+    "MXN": "MX",
+}
+
+
+def direction(value: float | None, signal: str, band: str, leg: str) -> int:
+    if value is None or abs(value) <= (
+        0 if band == "b0" else 0.1 if signal == "lvl" else 1.0
+    ):
+        return 0
+    foreign = 1 if value > 0 else -1
+    return -foreign if leg in USD_BASE else foreign
+
+
+def fix_returns(prices: Mapping[date, float | None], day: date) -> dict[date, float]:
+    fixes = [(d, p) for d, p in sorted(prices.items()) if d < day and p is not None]
+    return {
+        d: math.log(p / previous) for (_, previous), (d, p) in itertools.pairwise(fixes)
+    }
+
+
+def volatility(values: list[float]) -> float | None:
+    if len(values) < 60:
+        return None
+    sigma = statistics.stdev(values[-60:]) * math.sqrt(252)
+    if not math.isfinite(sigma) or sigma <= 0:
+        raise ValueError("invalid volatility")
+    return sigma
+
+
+def size_positions(
+    day: date,
+    directions: dict[str, int],
+    prices: Mapping[str, Mapping[date, float | None]],
+    universe: str,
+) -> dict[str, float]:
+    returns = {leg: fix_returns(prices[leg], day) for leg, q in directions.items() if q}
+    sigmas = {leg: volatility(list(series.values())) for leg, series in returns.items()}
+    active = {
+        leg: directions[leg] / sigma
+        for leg, sigma in sigmas.items()
+        if sigma is not None
+    }
+    sizes = {leg: 0.0 for leg in directions}
+    if not active:
+        return sizes
+    if universe == "jpy":
+        sizes["JPY"] = min(10.0, 0.30 * abs(active["JPY"]))
+        return sizes
+    common = sorted(set.intersection(*(set(returns[leg]) for leg in active)))
+    portfolio = [
+        sum(weight * returns[leg][d] for leg, weight in active.items()) for d in common
+    ]
+    sigma_p = volatility(portfolio)
+    if sigma_p is None:
+        return sizes
+    raw = {leg: 0.30 / sigma_p * abs(weight) for leg, weight in active.items()}
+    scale = min(1.0, 10.0 / sum(raw.values()))
+    sizes.update({leg: value * scale for leg, value in raw.items()})
+    return sizes
+
+
+def has_rate(rates: Mapping[date, float | None], day: date) -> bool:
+    month = day.year * 12 + day.month - 1 - 2
+    return any(
+        value is not None and d.year * 12 + d.month - 1 <= month
+        for d, value in rates.items()
+    )
+
+
+def signals(
+    config: str,
+    reports: dict[str, list[tuple[date, float]]],
+    calendar: list[date],
+    prices: Mapping[str, Mapping[date, float | None]],
+    rates: Mapping[str, Mapping[date, float | None]],
+    start: date = date(1996, 1, 2),
+) -> list[tuple[date, dict[str, date | None], dict[str, int], dict[str, float]]]:
+    signal, band, holding, universe = config.split("-")
+    if (
+        signal not in ("lvl", "z52", "z156")
+        or band not in ("b0", "b1")
+        or holding not in ("h1", "h2")
+        or universe not in ("jpy", "fx8")
+    ):
+        raise ValueError("invalid config")
+    legs = ("JPY",) if universe == "jpy" else LEGS
+    events: dict[date, list[tuple[date, str, float | None]]] = {}
+    for leg in legs:
+        rows = sorted(latest_slots(reports[leg]).values())
+        zs = {} if signal == "lvl" else z_values(rows, int(signal[1:]))
+        usable = []
+        for asof, hp in rows:
+            if holding == "h2" and slot(asof) % 2:
+                continue
+            try:
+                public, signal_day = public_and_signal(asof, calendar)
+            except ValueError:
+                continue
+            if signal_day is not None:
+                usable.append(
+                    (asof, public, signal_day, hp if signal == "lvl" else zs[asof])
+                )
+        for i, (asof, public, signal_day, value) in enumerate(usable):
+            events.setdefault(signal_day, []).append((asof, leg, value))
+            expiry = public + timedelta(days=14)
+            if i + 1 < len(usable) and usable[i + 1][1] <= expiry:
+                continue
+            at = bisect.bisect_left(calendar, expiry)
+            if at < len(calendar):
+                events.setdefault(calendar[at], []).append((asof, leg, None))
+    current = dict.fromkeys(legs, 0)
+    output = []
+    for day, changes in sorted(events.items()):
+        if day < start:
+            continue
+        acted = set()
+        for _, leg, value in sorted(changes):
+            current[leg] = direction(value, signal, band, leg)
+            acted.add(leg)
+        active = {
+            leg: q if has_rate(rates[leg], day) and has_rate(rates["USD"], day) else 0
+            for leg, q in current.items()
+        }
+        sizes = size_positions(day, active, prices, universe)
+        fills = {}
+        result_direction = {}
+        result_size = {}
+        for leg in sorted(acted):
+            fixes = sorted(
+                d for d, p in prices[leg].items() if d > day and p is not None
+            )
+            fills[leg] = fixes[0] if fixes else None
+            result_size[leg] = sizes[leg]
+            result_direction[leg] = active[leg] if sizes[leg] else 0
+        output.append((day, fills, result_direction, result_size))
+    return output
