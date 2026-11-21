@@ -1052,3 +1052,29 @@ def test_shifted_z_signal_is_cash_until_backlog_is_usable(monkeypatch, window):
     )
     assert shifted[0][0] == date(2019, 3, 26)
     assert shifted[0][2]["JPY"] == 0
+
+
+def test_gross_leverage_measures_book_after_all_same_day_fills():
+    from datetime import date, timedelta
+
+    from s002 import simulate_returns
+
+    start = date(2020, 1, 1)
+    days = [start + timedelta(days=i) for i in range(4)]
+    prices = {leg: dict.fromkeys(days, 100.0) for leg in ("JPY", "EUR")}
+    rates = {leg: {date(2019, 1, 1): 0.0} for leg in ("JPY", "EUR", "USD")}
+    actions = [
+        (days[0], {"EUR": days[1]}, {"EUR": 1}, {"EUR": 1.0}),
+        (
+            days[1],
+            {"JPY": days[2], "EUR": days[2]},
+            {"JPY": 1, "EUR": 0},
+            {"JPY": 1.0, "EUR": 0.0},
+        ),
+    ]
+    details = {}
+    simulate_returns(days, actions, prices, rates, start, costs=False, details=details)
+    assert details["max_gross"] == 1.0
+    actions[1] = (days[1], {"JPY": days[2]}, {"JPY": 1}, {"JPY": 2.0})
+    simulate_returns(days, actions, prices, rates, start, costs=False, details=details)
+    assert details["max_gross"] == 3.0

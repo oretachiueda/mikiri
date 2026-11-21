@@ -508,9 +508,6 @@ def simulate_returns(
                 if new_notional and (not notional or new_notional * notional < 0):
                     trades += 1
                 target_leverage[leg] = q * leverage
-                max_gross = max(
-                    max_gross, sum(abs(v) for v in target_leverage.values())
-                )
                 if costs:
                     spread = SPREAD[leg] / (2 * price) * abs(new_notional - notional)
                     pnl -= spread
@@ -545,6 +542,8 @@ def simulate_returns(
                     }
                 )
             previous_fix[leg] = (day, price)
+        if day in fills:
+            max_gross = max(max_gross, sum(abs(v) for v in target_leverage.values()))
         daily_return = pnl / equity
         if trace is not None:
             for row in trace_day:
