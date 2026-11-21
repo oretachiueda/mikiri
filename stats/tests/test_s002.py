@@ -539,3 +539,25 @@ def test_dev_judgment_selects_winner_and_uses_its_wealth():
     assert values["W_dev"] == 2.0 and values["W_C"] == 0.8
     with pytest.raises(ValueError, match="24"):
         dev_judgment({}, {}, 1.0, 1.0)
+
+
+def test_d_control_runs_all_shifted_paths(monkeypatch):
+    from datetime import date
+
+    import s002
+
+    offsets = list(range(1000))
+    seen = []
+    monkeypatch.setattr(s002, "d_offsets", lambda _: offsets)
+    monkeypatch.setattr(
+        s002,
+        "shifted_actions",
+        lambda config, raw, offset, *args: seen.append(offset) or [],
+    )
+    monkeypatch.setattr(
+        s002, "simulate_returns", lambda *args: [(None, -0.01, 1.0), (None, 0.02, 1.0)]
+    )
+    count, first = s002.d_control(
+        "lvl-b0-h1-jpy", [], [date(2020, 1, 1)], {}, {}, {}, 100.0
+    )
+    assert count == 1000 and seen == offsets and first == offsets[:10]

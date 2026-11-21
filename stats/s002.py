@@ -628,6 +628,28 @@ def shifted_actions(
     return result
 
 
+def d_control(
+    config: str,
+    raw_actions: Sequence[
+        tuple[date, Mapping[str, date | None], Mapping[str, int], Mapping[str, float]]
+    ],
+    calendar: list[date],
+    reports: dict[str, list[tuple[date, float]]],
+    prices: Mapping[str, Mapping[date, float | None]],
+    rates: Mapping[str, Mapping[date, float | None]],
+    actual_sr: float,
+) -> tuple[int, list[int]]:
+    offsets = d_offsets(len(calendar))
+    count = 0
+    for offset in offsets:
+        actions = shifted_actions(
+            config, raw_actions, offset, calendar, reports, prices, rates
+        )
+        path = simulate_returns(calendar, actions, prices, rates, calendar[0])
+        count += sharpe([daily for _, daily, _ in path]) < actual_sr
+    return count, offsets[:10]
+
+
 def dev_judgment(
     paths: Mapping[str, list[float]],
     wealth: Mapping[str, tuple[float, float]],
