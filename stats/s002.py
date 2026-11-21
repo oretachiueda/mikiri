@@ -898,8 +898,6 @@ def run_dev(
     ]
     if trace_config is not None and trace_config not in configs:
         raise ValueError("invalid trace config")
-    if skip_d and trace_config is None:
-        raise ValueError("--skip-d requires --trace")
     trace_rows: list[dict[str, object]] = []
     trace_reports: dict[tuple[date, str], list[date]] = {}
     paths: dict[str, list[float]] = {}
@@ -1058,8 +1056,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.holdout:
         parser.error("holdout is not implemented and cannot be run")
-    if args.skip_d and not args.trace:
-        parser.error("--skip-d requires --trace")
     run_dev(args.cot, args.fred, args.spy, args.out, args.trace, args.skip_d)
     return 0
 

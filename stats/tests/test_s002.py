@@ -720,7 +720,8 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
     assert any(
         row["signal_day_flag"] == "True" and row["report_as_of"] for row in trace
     )
-    with pytest.raises(SystemExit):
+    no_trace_out = tmp_path / "no-trace"
+    assert (
         s002.main(
             [
                 "--cot",
@@ -730,10 +731,14 @@ def test_cli_synthetic_files_produce_dev_outputs(tmp_path, monkeypatch):
                 "--spy",
                 str(spy),
                 "--out",
-                str(out),
+                str(no_trace_out),
                 "--skip-d",
             ]
         )
+        == 0
+    )
+    assert json.loads((no_trace_out / "summary.json").read_text())["gates"]["D"] is None
+    assert not list(no_trace_out.glob("trace-*.csv"))
 
 
 def test_fx8_sizes_only_legs_acting_on_the_day(monkeypatch):
