@@ -38,4 +38,6 @@ A `run` line with `stage` `search` may set `code_commit` to `null` when the sear
 
 Synthetic gym runs stay out of `n_cumulative` only when all of these hold: the generator reads no market file and does not resample or match moments, quantiles, or dates of any market series; every generator constant was written before any market series for that study was inspected; the gym emits pass/fail against bands fixed in the same commit and does not rank rules; no strategy, cost, fill rule, gate formula, threshold, or window is added, dropped, or edited after a gym result; and the seed is a function of the commit that contains both the generator and the pipeline. If any condition fails, every distinct decision rule in that run counts toward `n_cumulative`, as a search run does.
 
+From this paragraph's commit on, every new `verdict` line's `values` also carries `single_trial_psr` (PSR(0) of the selected or single configuration) and `single_trial_bar_pass` (whether it is >= 0.95), as reference only. These never change `result` or `gates`. Earlier `verdict` lines are not edited (append-only).
+
 Dates inside `dev` and `holdout` are `YYYY-MM-DD`. `holdout` is `null` when the preregistration puts the recent period into the main test and says why. A `prereg` line is written in the same commit as its document, so `doc_sha256` hashes the merged file bytes.
