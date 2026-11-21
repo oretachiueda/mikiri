@@ -924,3 +924,24 @@ def test_r13_pipeline_future_input_changes_do_not_change_past():
     assert (
         trace(changed_reports, changed_prices, changed_rates, changed_spy) == original
     )
+
+
+def test_h2_odd_report_resets_expiry_without_acting(monkeypatch):
+    from datetime import date, timedelta
+
+    import s002
+
+    days = [date(1996, 1, 1) + timedelta(days=i) for i in range(130)]
+    reports = {"JPY": [(date(1996, 3, 19), 0.5), (date(1996, 3, 26), -0.5)]}
+    prices = {"JPY": dict.fromkeys(days, 100.0)}
+    rates = {"JPY": {date(1995, 1, 1): 1.0}, "USD": {date(1995, 1, 1): 1.0}}
+    monkeypatch.setattr(
+        s002,
+        "size_positions",
+        lambda day, directions, prices, universe: dict.fromkeys(directions, 1.0),
+    )
+    actions = s002.signals("lvl-b0-h2-jpy", reports, days, prices, rates, days[0])
+    assert not any(day == date(1996, 4, 2) for day, *_ in actions)
+    assert not any(day == date(1996, 4, 8) for day, *_ in actions)
+    exit_action = next(row for row in actions if row[0] == date(1996, 4, 15))
+    assert exit_action[2]["JPY"] == 0

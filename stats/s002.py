@@ -317,8 +317,6 @@ def signals(
         zs = {} if signal == "lvl" else z_values(rows, int(signal[1:]))
         usable = []
         for asof, hp in rows:
-            if holding == "h2" and slot(asof) % 2:
-                continue
             try:
                 public, signal_day = public_and_signal(asof, calendar)
             except ValueError:
@@ -328,19 +326,20 @@ def signals(
                     (asof, public, signal_day, hp if signal == "lvl" else zs[asof])
                 )
         for asof, public, signal_day, value in usable:
-            events.setdefault(signal_day, []).append((asof, leg, value))
-            if trace_reports is not None:
-                trace_reports.setdefault((signal_day, leg), []).append(asof)
-            expiry = public + timedelta(days=14)
+            if holding != "h2" or slot(asof) % 2 == 0:
+                events.setdefault(signal_day, []).append((asof, leg, value))
+                if trace_reports is not None:
+                    trace_reports.setdefault((signal_day, leg), []).append(asof)
+            at = bisect.bisect_left(calendar, public + timedelta(days=14))
+            if at >= len(calendar):
+                continue
             if any(
-                public <= other_public <= expiry
-                and (other_public > public or other_asof > asof)
-                for other_asof, other_public, _, _ in usable
+                (other_signal, other_asof) > (signal_day, asof)
+                and other_signal <= calendar[at]
+                for other_asof, _, other_signal, _ in usable
             ):
                 continue
-            at = bisect.bisect_left(calendar, expiry)
-            if at < len(calendar):
-                events.setdefault(calendar[at], []).append((asof, leg, None))
+            events.setdefault(calendar[at], []).append((asof, leg, None))
     current = dict.fromkeys(legs, 0)
     output = []
     for day, changes in sorted(events.items()):
