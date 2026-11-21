@@ -2,7 +2,7 @@
 
 use crate::h001::{output_hashes, publish_output_directory};
 use jiff::civil::{Date, date};
-use market::{Market, Sizing, retax, simulate, simulate_with_trace};
+use market::{Daily, Market, Sizing, retax, simulate, simulate_with_trace};
 use serde_json::json;
 use signals::{Config, schedule};
 use statistics::{GRID_SIZE, after, annual, expected_max_sr, max_drawdown, offsets, psr, sr};
@@ -124,6 +124,46 @@ fn write_daily_csv(mut csv: impl Write, dates: &[Date], rows: &[Row]) -> Result<
     Ok(())
 }
 
+struct ShiftResult {
+    offset: usize,
+    sr_daily: f64,
+    skipped_actions: usize,
+}
+
+fn write_d_shifts_csv(mut csv: impl Write, shifts: &[ShiftResult]) -> Result<()> {
+    writeln!(csv, "draw,offset,shifted_sr_daily,skipped_actions")?;
+    for (index, row) in shifts.iter().enumerate() {
+        writeln!(
+            csv,
+            "{},{},{:?},{}",
+            index + 1,
+            row.offset,
+            row.sr_daily,
+            row.skipped_actions
+        )?;
+    }
+    csv.flush()?;
+    Ok(())
+}
+
+fn write_equity_csv(
+    mut csv: impl Write,
+    dates: &[Date],
+    days: &[Daily],
+    benchmark: &[f64],
+) -> Result<()> {
+    writeln!(csv, "date,equity_after_tax,tax_paid,B")?;
+    for ((date, day), b) in dates.iter().zip(days).zip(benchmark) {
+        writeln!(
+            csv,
+            "{date},{:?},{:?},{b:?}",
+            day.equity_after_tax, day.tax_paid
+        )?;
+    }
+    csv.flush()?;
+    Ok(())
+}
+
 /// Run S002 dev, recent-window tax replay, and the circular-shift gate.
 pub fn run(
     cot: &Path,
@@ -165,15 +205,23 @@ pub fn run(
         &selected.days[recent - market.start..],
     )?;
     let dsr = psr(&after(&selected), winner.sr_after_daily, sr0)?;
-    let mut below = 0;
-    let mut skipped = 0;
+    let mut shifts = Vec::with_capacity(offsets.len());
     for &offset in &offsets {
         let run = simulate(&market, &mut sizing, &winner_schedule, Some(offset))
             .map_err(|error| format!("D offset {offset}: {error}"))?;
         let sr = sr(&after(&run)).map_err(|error| format!("D offset {offset}: {error}"))?;
-        below += usize::from(sr < winner.sr_after_daily);
-        skipped += run.skipped;
+        shifts.push(ShiftResult {
+            offset,
+            sr_daily: sr,
+            skipped_actions: run.skipped,
+        });
     }
+    let below = shifts
+        .iter()
+        .filter(|row| row.sr_daily < winner.sr_after_daily)
+        .count();
+    let skipped: usize = shifts.iter().map(|row| row.skipped_actions).sum();
+    let benchmark = market.benchmark_path(market.start)?;
     let mut trace_rows = Vec::new();
     if let Some(config) = trace_config {
         let schedule = schedule(&market.dates, &input.reports, config, market.start)?;
@@ -203,6 +251,16 @@ pub fn run(
         "code": clean_commit(),
     });
     publish_output_directory(out, |dir| {
+        write_d_shifts_csv(
+            BufWriter::new(File::create(dir.join("d_shifts.csv"))?),
+            &shifts,
+        )?;
+        write_equity_csv(
+            BufWriter::new(File::create(dir.join("equity.csv"))?),
+            dates,
+            &selected.days,
+            &benchmark,
+        )?;
         if let Some(config) = trace_config {
             let file = File::create(dir.join(format!("trace-{}.csv", config.id())))?;
             trace::write_csv(BufWriter::new(file), &trace_rows)?;
@@ -243,6 +301,52 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recomputation_csvs_keep_draw_order_and_full_precision() {
+        let sr = 1.234_567_890_123_456_7e-10_f64;
+        let shifts = [
+            ShiftResult {
+                offset: 775,
+                sr_daily: sr,
+                skipped_actions: 3,
+            },
+            ShiftResult {
+                offset: 252,
+                sr_daily: -sr,
+                skipped_actions: 0,
+            },
+        ];
+        let mut csv = Vec::new();
+        write_d_shifts_csv(&mut csv, &shifts).unwrap();
+        assert_eq!(
+            String::from_utf8(csv).unwrap(),
+            "draw,offset,shifted_sr_daily,skipped_actions\n1,775,1.2345678901234568e-10,3\n2,252,-1.2345678901234568e-10,0\n"
+        );
+
+        let dates = [date(1996, 12, 31), date(1997, 1, 2)];
+        let equity = [1.25, 1.249_999_999_999_999_8];
+        let days = [
+            Daily {
+                before: 0.0,
+                after: 0.0,
+                equity_after_tax: equity[0],
+                tax_paid: 0.013,
+            },
+            Daily {
+                before: 0.0,
+                after: 0.0,
+                equity_after_tax: equity[1],
+                tax_paid: 0.0,
+            },
+        ];
+        let mut csv = Vec::new();
+        write_equity_csv(&mut csv, &dates, &days, &[1.5, 1.25]).unwrap();
+        assert_eq!(
+            String::from_utf8(csv).unwrap(),
+            "date,equity_after_tax,tax_paid,B\n1996-12-31,1.25,0.013,1.5\n1997-01-02,1.2499999999999998,0.0,1.25\n"
+        );
+    }
 
     #[test]
     fn daily_csv_keeps_preregistered_order_and_exact_return_bits() {

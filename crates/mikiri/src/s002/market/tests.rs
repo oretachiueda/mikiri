@@ -250,6 +250,8 @@ fn tax_loss_carries_three_years_and_settles_stub_years() {
     let days = [-0.2, 0.125, -0.1, 0.0, 0.0, 0.25].map(|v| Daily {
         after: v,
         before: v,
+        equity_after_tax: 0.0,
+        tax_paid: 0.0,
     });
     let taxable = 0.81 * 0.25 - 0.09;
     near(
@@ -368,6 +370,10 @@ fn dev_starts_flat_and_benchmark_includes_first_day_with_independent_carry() {
     let market = Market::new(&input).unwrap();
     assert_eq!(market.dates[market.start], DEV_START);
     assert_eq!(
+        market.benchmark_path(market.start).unwrap(),
+        [0.95, 1.875, 2.5]
+    );
+    assert_eq!(
         market.baseline,
         [Some(200.0), Some(190.0), Some(375.0), Some(500.0)]
     );
@@ -463,6 +469,19 @@ fn recent_reuses_dev_holding_and_restarts_tax_and_wealth() {
     near(run.days[3].after, reused_return);
     near(segment, 1.0 + reused_return * (1.0 - 0.20315));
     near(market.benchmark_wealth(3).unwrap(), 1.32);
+    let taxable = 0.2 - 0.1 - 0.001 / 100.0;
+    near(run.days[3].tax_paid, taxable * 0.20315);
+    near(
+        run.days[3].equity_after_tax,
+        1.0 + taxable * (1.0 - 0.20315),
+    );
+    assert!(
+        run.days
+            .iter()
+            .enumerate()
+            .all(|(index, day)| index == 3 || day.tax_paid == 0.0)
+    );
+    assert_eq!(run.days.last().unwrap().equity_after_tax, run.equity);
     assert_eq!(run.entries, 1);
 }
 

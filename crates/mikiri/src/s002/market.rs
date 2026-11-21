@@ -148,29 +148,34 @@ impl Market {
         })
     }
 
-    pub fn benchmark_wealth(&self, start: usize) -> Result<f64> {
+    fn benchmark_base(&self, start: usize) -> Result<f64> {
         if !(1..self.dates.len()).contains(&start) {
             return Err(
                 "benchmark requires a preceding calendar date and at least one return".into(),
             );
         }
-        let first = self
-            .baseline
-            .get(start - 1)
-            .copied()
-            .flatten()
-            .ok_or("missing starting JPY SPY value")?;
-        let last = self
-            .baseline
-            .last()
-            .copied()
-            .flatten()
-            .ok_or("missing ending JPY SPY value")?;
-        let ratio = last / first;
+        self.baseline[start - 1].ok_or_else(|| "missing starting JPY SPY value".into())
+    }
+
+    fn benchmark_ratio(value: Option<f64>, base: f64) -> Result<f64> {
+        let ratio = value.ok_or("missing JPY SPY value")? / base;
         if !ratio.is_finite() || ratio <= 0.0 {
             return Err("invalid JPY SPY return".into());
         }
         Ok(ratio)
+    }
+
+    pub fn benchmark_wealth(&self, start: usize) -> Result<f64> {
+        let base = self.benchmark_base(start)?;
+        Self::benchmark_ratio(self.baseline.last().copied().flatten(), base)
+    }
+
+    pub fn benchmark_path(&self, start: usize) -> Result<Vec<f64>> {
+        let base = self.benchmark_base(start)?;
+        self.baseline[start..]
+            .iter()
+            .map(|&value| Self::benchmark_ratio(value, base))
+            .collect()
     }
 }
 
@@ -293,6 +298,8 @@ impl Sizing {
 pub(super) struct Daily {
     pub before: f64,
     pub after: f64,
+    pub equity_after_tax: f64,
+    pub tax_paid: f64,
 }
 pub(super) struct Account {
     pub days: Vec<Daily>,
@@ -315,19 +322,21 @@ struct TaxAccount {
 }
 
 impl TaxAccount {
-    fn apply(&mut self, dates: &[Date], index: usize, equity: f64, pnl: f64) -> Result<f64> {
+    fn apply(&mut self, dates: &[Date], index: usize, equity: f64, pnl: f64) -> Result<(f64, f64)> {
         let year = dates[index].year();
-        let mut end = equity + pnl;
+        let end = equity + pnl;
         self.income += pnl;
-        if dates.get(index + 1).is_none_or(|day| day.year() != year) {
-            end -= self
-                .taxes
-                .settle(i32::from(year), std::mem::take(&mut self.income));
-        }
-        if !end.is_finite() || end <= 0.0 {
+        let tax_paid = if dates.get(index + 1).is_none_or(|day| day.year() != year) {
+            self.taxes
+                .settle(i32::from(year), std::mem::take(&mut self.income))
+        } else {
+            0.0
+        };
+        let equity_after_tax = end - tax_paid;
+        if !equity_after_tax.is_finite() || equity_after_tax <= 0.0 {
             return Err(format!("invalid equity or bust on {}", dates[index]).into());
         }
-        Ok(end)
+        Ok((equity_after_tax, tax_paid))
     }
 }
 
@@ -335,7 +344,7 @@ pub(super) fn retax(dates: &[Date], days: &[Daily]) -> Result<f64> {
     let mut account = TaxAccount::default();
     let mut equity = 1.0;
     for (index, day) in days.iter().enumerate() {
-        equity = account.apply(dates, index, equity, equity * day.after)?;
+        (equity, _) = account.apply(dates, index, equity, equity * day.after)?;
     }
     Ok(equity)
 }
@@ -479,11 +488,15 @@ pub(super) fn simulate_with_trace(
                 row.daily_return = daily_return;
             }
         }
+        let (equity_after_tax, tax_paid) =
+            tax.apply(&market.dates, index, previous_equity, after)?;
         account.days.push(Daily {
             before: before / previous_equity,
             after: daily_return,
+            equity_after_tax,
+            tax_paid,
         });
-        account.equity = tax.apply(&market.dates, index, previous_equity, after)?;
+        account.equity = equity_after_tax;
 
         if actions.iter().all(Option::is_none) {
             continue;
