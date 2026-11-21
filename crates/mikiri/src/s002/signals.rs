@@ -357,6 +357,28 @@ mod tests {
     }
 
     #[test]
+    fn missing_week_queues_cash_and_contiguous_refill_enables_z_again() {
+        let start = date(1999, 1, 5);
+        let dates = days(start, start.checked_add(Span::new().days(110 * 7)).unwrap());
+        let reports = reports(
+            0,
+            (0..110)
+                .filter(|&slot| slot != 53)
+                .map(|slot| report(dates[slot * 7], slot, slot as f64 / 110.0))
+                .collect(),
+        );
+        let config = Config {
+            signal: Signal::Z52,
+            ..Config::all().next().unwrap()
+        };
+        let s = schedule(&dates, &reports, config, 0).unwrap();
+        assert_eq!(s.actions[(52 + 1) * 7][0], Some(Action::Report(-1)));
+        assert_eq!(s.actions[(54 + 1) * 7][0], Some(Action::Exit));
+        assert!(!s.active[(104 + 1) * 7][0]);
+        assert_eq!(s.actions[(105 + 1) * 7][0], Some(Action::Report(-1)));
+    }
+
+    #[test]
     fn inclusive_bands_and_quote_direction_match_pair_orientation() {
         let cfg = Config::all()
             .find(|cfg| cfg.band && cfg.even && cfg.fx8)

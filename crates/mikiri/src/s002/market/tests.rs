@@ -405,3 +405,38 @@ fn circular_shift_wraps_signal_days_and_skips_inactive_destinations() {
     assert_eq!(shifted.days[4].after, 0.0);
     assert_eq!(shifted.fills, 2);
 }
+
+#[test]
+fn recent_reuses_dev_holding_and_restarts_tax_and_wealth() {
+    let dates = vec![
+        date(2019, 10, 29),
+        date(2019, 10, 30),
+        date(2019, 10, 31),
+        date(2019, 11, 1),
+        date(2020, 10, 30),
+    ];
+    let market = Market {
+        dates,
+        start: 0,
+        legs: [0.0, 0.0, -0.1, 0.2, 0.0]
+            .map(|spot| {
+                let mut legs = [LegDay::default(); LEGS];
+                legs[0] = LegDay {
+                    fix: Some(fix(100.0, spot, (0.0, 0.0))),
+                    sigma: Some(0.30),
+                    rates_ready: true,
+                };
+                legs
+            })
+            .to_vec(),
+        baseline: vec![],
+    };
+    let mut s = empty_schedule(5);
+    s.actions[0][0] = Some(Action::Report(1));
+    let run = simulate(&market, &mut Sizing::default(), &s, None).unwrap();
+    let segment = retax(&market.dates[3..], &run.days[3..]).unwrap();
+    let reused_return = 0.2 / (1.0 - 0.001 / 100.0 - 0.1);
+    near(run.days[3].after, reused_return);
+    near(segment, 1.0 + reused_return * (1.0 - 0.20315));
+    assert_eq!(run.fills, 1);
+}
