@@ -4,7 +4,6 @@ use arrow_schema::{Field, Schema};
 use parquet::arrow::ArrowWriter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -292,12 +291,12 @@ pub fn input_hashes(inputs: &InputPaths<'_>) -> Result<BTreeMap<String, String>>
     paths.push(("SPY.json".into(), inputs.spy.to_owned()));
     paths
         .into_iter()
-        .map(|(key, path)| Ok((key, format!("{:x}", Sha256::digest(fs::read(path)?)))))
+        .map(|(key, path)| Ok((key, crate::sha256_hex(fs::read(path)?))))
         .collect()
 }
 
 fn digest(path: &Path) -> Result<String> {
-    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
+    Ok(crate::sha256_hex(fs::read(path)?))
 }
 
 fn equivalent(expected: &Value, actual: &Value, field: &str) -> bool {

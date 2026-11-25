@@ -1,4 +1,3 @@
-use sha2::{Digest, Sha256};
 use std::{
     fmt, fs,
     io::Write,
@@ -216,12 +215,12 @@ pub fn save_daily_bars(raw: &[u8], out: &Path) -> Result<String, FetchError> {
         return Err(FetchError::Message("cannot publish output"));
     }
     Ok(format!(
-        "wrote {} bars={} first={} last={} sha256={:x}",
+        "wrote {} bars={} first={} last={} sha256={}",
         out.display(),
         bars.len(),
         first.date,
         last.date,
-        Sha256::digest(raw)
+        crate::sha256_hex(raw)
     ))
 }
 

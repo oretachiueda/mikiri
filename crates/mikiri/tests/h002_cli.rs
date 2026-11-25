@@ -7,7 +7,6 @@ use parquet::{
     file::properties::WriterProperties,
 };
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File},
     path::PathBuf,
@@ -92,7 +91,7 @@ impl Workspace {
     }
 
     fn hash(&self, path: &str) -> String {
-        format!("{:x}", Sha256::digest(self.bytes(path)))
+        mikiri::sha256_hex(self.bytes(path))
     }
 
     fn command(&self, args: &[&str]) -> Output {

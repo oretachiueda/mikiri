@@ -2,7 +2,6 @@ use jiff::{
     civil::{Date, DateTime, Weekday},
     tz::{AmbiguousOffset, TimeZone},
 };
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -94,7 +93,7 @@ fn zones() -> Result<(TimeZone, TimeZone, TimeZone)> {
 }
 
 fn ny_timestamp(dt: DateTime, ny: &TimeZone) -> Result<jiff::Timestamp> {
-    let ambiguous = ny.to_ambiguous_zoned(dt);
+    let ambiguous = ny.to_ambiguous_zoned_datetime(dt);
     if matches!(ambiguous.offset(), AmbiguousOffset::Gap { .. }) {
         return Err("nonexistent New York timestamp".into());
     }
@@ -145,10 +144,7 @@ pub fn read(dir: &Path, stage: Stage) -> Result<Inputs> {
             continue;
         }
         let path = dir.join(&name);
-        let mut file = File::open(&path)?;
-        let mut hash = Sha256::new();
-        std::io::copy(&mut file, &mut hash)?;
-        hashes.insert(name.clone(), format!("{:x}", hash.finalize()));
+        hashes.insert(name.clone(), crate::sha256_hex_reader(File::open(&path)?)?);
         let mut zip = zip::ZipArchive::new(File::open(path)?)?;
         let member = format!("DAT_ASCII_EURUSD_M1_{id}.csv");
         let mut csv = BufReader::new(zip.by_name(&member)?);
@@ -264,10 +260,10 @@ pub struct Day {
 
 pub fn boundary_minutes(date: Date) -> Result<(i16, i16)> {
     let (ny, dublin, tokyo) = zones()?;
-    let eu = ny.to_datetime(dublin.to_zoned(date.at(7, 0, 0, 0))?.timestamp());
+    let eu = ny.to_datetime(dublin.to_zoned_datetime(date.at(7, 0, 0, 0))?.timestamp());
     let exit = ny.to_datetime(
         tokyo
-            .to_zoned(date.tomorrow()?.at(3, 45, 0, 0))?
+            .to_zoned_datetime(date.tomorrow()?.at(3, 45, 0, 0))?
             .timestamp(),
     );
     if eu.date() != date || exit.date() != date {

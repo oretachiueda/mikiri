@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{fs, io::Write, path::Path};
 use time::{Date, format_description::well_known::Iso8601};
 
@@ -17,7 +16,7 @@ struct Entry {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::sha256_hex(bytes)
 }
 fn hash(entry: &Entry) -> Result<String, String> {
     let mut value = serde_json::to_value(entry).map_err(|e| e.to_string())?;

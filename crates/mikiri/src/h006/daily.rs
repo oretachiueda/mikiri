@@ -274,7 +274,7 @@ pub fn compute(
         if !u.is_finite() || daily_return.is_some_and(|r| !r.is_finite()) {
             return Err("nonfinite daily result".into());
         }
-        let noon = ny.to_zoned(day.date.at(12, 0, 0, 0))?.timestamp();
+        let noon = ny.to_zoned_datetime(day.date.at(12, 0, 0, 0))?.timestamp();
         out.push(Daily {
             date: day.date,
             us_dst: ny.to_offset_info(noon).dst() == Dst::Yes,

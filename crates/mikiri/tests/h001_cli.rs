@@ -2,7 +2,6 @@ use arrow_array::{BooleanArray, Date32Array, Float64Array, StringArray};
 use arrow_schema::DataType;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Command};
 use time::{Date, Month, Weekday};
 
@@ -76,8 +75,8 @@ fn cli_writes_readable_outputs_and_hashes_with_october_30_final_bar() {
     let mut expected = Vec::new();
     for name in ["bars.parquet", "cycles.parquet", "summary.json"] {
         let path = format!("results/run/{name}");
-        let hash = Sha256::digest(fs::read(workspace.0.join(&path)).expect("output bytes"));
-        expected.push(format!("{path} sha256={hash:x}"));
+        let hash = mikiri::sha256_hex(fs::read(workspace.0.join(&path)).expect("output bytes"));
+        expected.push(format!("{path} sha256={hash}"));
     }
     assert_eq!(
         stdout,

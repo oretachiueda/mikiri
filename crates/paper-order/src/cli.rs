@@ -77,7 +77,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
 }
 
 pub fn market_hours(now: Timestamp) -> Result<(), String> {
-    let local = now.to_zoned(TimeZone::get("America/New_York").map_err(|e| e.to_string())?);
+    let local =
+        now.to_zoned_datetime(TimeZone::get("America/New_York").map_err(|e| e.to_string())?);
     // shortcut: exchange holidays are not modeled; upgrade when holiday data is available.
     if matches!(local.weekday(), Weekday::Saturday | Weekday::Sunday)
         || (local.hour(), local.minute()) < (9, 35)

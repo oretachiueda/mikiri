@@ -5,7 +5,6 @@ use arrow_array::{
 use arrow_schema::{Field, Schema};
 use parquet::arrow::ArrowWriter;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{
     error::Error,
     fs::{self, File},
@@ -419,9 +418,9 @@ pub(crate) fn output_hashes(out: &Path, names: &[&str]) -> Result<String> {
     for name in names {
         let path = out.join(name);
         report.push(format!(
-            "{} sha256={:x}",
+            "{} sha256={}",
             path.display(),
-            Sha256::digest(fs::read(&path)?)
+            crate::sha256_hex(fs::read(&path)?)
         ));
     }
     Ok(report.join(" "))

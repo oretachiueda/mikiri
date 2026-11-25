@@ -37,7 +37,6 @@ use arrow_array::{Array, RecordBatch, StringArray};
 use arrow_schema::{Field, Schema};
 use parquet::arrow::ArrowWriter;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -61,9 +60,7 @@ pub struct InputPaths<'a> {
     pub spy: &'a Path,
 }
 fn digest(path: &Path) -> Result<String> {
-    let mut hash = Sha256::new();
-    io::copy(&mut File::open(path)?, &mut hash)?;
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(crate::sha256_hex_reader(File::open(path)?)?)
 }
 fn all_hashes(inputs: &InputPaths<'_>) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();

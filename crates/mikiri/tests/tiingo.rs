@@ -1,6 +1,5 @@
 use mikiri::tiingo::{FetchError, fetch_daily_bars, parse_daily_bars, save_daily_bars};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::PathBuf,
@@ -175,9 +174,9 @@ fn saves_exact_bytes_and_reports_hash_without_prices() {
     assert_eq!(
         summary,
         format!(
-            "wrote {} bars=2 first=2020-01-02 last=2020-01-03 sha256={:x}",
+            "wrote {} bars=2 first=2020-01-02 last=2020-01-03 sha256={}",
             out.display(),
-            Sha256::digest(bytes)
+            mikiri::sha256_hex(bytes)
         )
     );
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);

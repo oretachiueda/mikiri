@@ -7,7 +7,6 @@ use parquet::{
     file::reader::{ChunkReader, Length},
 };
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -94,7 +93,7 @@ fn read_months(file: &Path, expected_hash: &str) -> Result<(BTreeMap<i32, MonthI
     }
     let file = File::open(file)?;
     let bytes = file.get_bytes(0, usize::try_from(file.len())?)?;
-    let input_hash = format!("{:x}", Sha256::digest(&bytes));
+    let input_hash = crate::sha256_hex(&bytes);
     if input_hash != expected_hash {
         return Err("input SHA-256 mismatch".into());
     }
