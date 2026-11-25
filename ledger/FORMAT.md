@@ -40,4 +40,6 @@ Synthetic gym runs stay out of `n_cumulative` only when all of these hold: the g
 
 From this paragraph's commit on, every new `verdict` line's `values` also carries `single_trial_psr` (PSR(0) of the selected or single configuration) and `single_trial_bar_pass` (whether it is >= 0.95), as reference only. These never change `result` or `gates`. Earlier `verdict` lines are not edited (append-only).
 
+Running `stats/factor_eval.py` on real market data to choose, rank, or drop candidate factors is a search. Each distinct factor configuration evaluated (factor formula, universe, horizon, and quantile count) counts toward `n_cumulative` as a search run does. Synthetic runs follow the gym rule above.
+
 Dates inside `dev` and `holdout` are `YYYY-MM-DD`. `holdout` is `null` when the preregistration puts the recent period into the main test and says why. A `prereg` line is written in the same commit as its document, so `doc_sha256` hashes the merged file bytes.
