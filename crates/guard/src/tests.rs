@@ -402,3 +402,170 @@ fn journal_share_sum_rejects_positive_and_negative_overflow() {
     assert_eq!(sum_shares([i64::MAX, -1]).unwrap(), i64::MAX - 1);
     assert_eq!(sum_shares([i64::MIN, 1]).unwrap(), i64::MIN + 1);
 }
+
+#[test]
+fn non_fill_outcomes_reconcile_without_releasing_keys() {
+    for outcome in ["denied", "rejected"] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("journal");
+        let mut journal = Journal::open(&path).unwrap();
+        let recorded = journal.record(approved()).unwrap();
+        assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 1);
+        let original = fs::read_to_string(&path).unwrap();
+        drop(journal);
+        let terminal = format!(
+            "{{\"key\":\"{}\",\"outcome\":\"{outcome}\",\"recorded_at\":\"2026-11-11T16:00:00Z\"}}\n",
+            recorded.key()
+        );
+        fs::write(&path, format!("{original}{terminal}")).unwrap();
+        let mut journal = Journal::open(&path).unwrap();
+        assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 0);
+        assert_eq!(journal.orders_on(DAY), 1);
+        assert!(matches!(
+            journal.record(approved()),
+            Err(JournalError::Duplicate)
+        ));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{original}{terminal}")
+        );
+    }
+}
+
+#[test]
+fn non_fill_api_preserves_other_positions_and_pending_orders() {
+    for outcome in [NonFillOutcome::Denied, NonFillOutcome::Rejected] {
+        for side in [Side::Buy, Side::Sell] {
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("journal");
+            let mut journal = Journal::open(&path).unwrap();
+            let initial =
+                Intent::new(DAY.previous_day().unwrap(), "demo", "SPY", Side::Buy, 3).unwrap();
+            journal.record(Approved(initial)).unwrap();
+            let candidate = intent(side, 1);
+            let recorded = journal.record(Approved(candidate.clone())).unwrap();
+            assert_eq!(
+                journal.net_shares("demo", "SPY").unwrap(),
+                if side == Side::Buy { 4 } else { 2 }
+            );
+            let before = fs::read_to_string(&path).unwrap();
+            journal.record_non_fill(&recorded, outcome).unwrap();
+            assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 3);
+            assert_eq!(journal.orders_on(DAY), 1);
+            let after = fs::read_to_string(&path).unwrap();
+            assert!(after.starts_with(&before));
+            assert_eq!(after.lines().count(), 3);
+            assert!(matches!(
+                journal.record_non_fill(&recorded, outcome),
+                Err(JournalError::Corrupt)
+            ));
+            drop(journal);
+            let mut journal = Journal::open(&path).unwrap();
+            assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 3);
+            assert_eq!(journal.orders_on(DAY), 1);
+            assert!(matches!(
+                journal.record(Approved(candidate)),
+                Err(JournalError::Duplicate)
+            ));
+            assert_eq!(fs::read_to_string(path).unwrap(), after);
+        }
+    }
+}
+
+#[test]
+fn non_fill_replay_corruption_fails_closed() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("journal");
+    let mut journal = Journal::open(&path).unwrap();
+    let recorded = journal.record(approved()).unwrap();
+    let intent = fs::read_to_string(&path).unwrap();
+    journal
+        .record_non_fill(&recorded, NonFillOutcome::Denied)
+        .unwrap();
+    drop(journal);
+    let valid = fs::read_to_string(&path).unwrap();
+    let outcome = valid.strip_prefix(&intent).unwrap();
+    let mutations = [
+        outcome.to_owned(),
+        format!("{valid}{outcome}"),
+        valid.replace("\"denied\"", "\"filled\""),
+        valid.replace("\"outcome\":", "\"unknown\":0,\"outcome\":"),
+        valid.replace("\"outcome\":", "\"shares\":1,\"outcome\":"),
+        format!(
+            "{intent}{}",
+            outcome.replace("demo:SPY:buy", "other:SPY:buy")
+        ),
+        format!("{intent}{}", outcome.replace("Z\"", "+01:00\"")),
+        valid.trim_end().to_owned(),
+    ];
+    for bad in mutations {
+        fs::write(&path, &bad).unwrap();
+        assert!(
+            matches!(Journal::open(&path), Err(JournalError::Corrupt)),
+            "{bad}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), bad);
+    }
+}
+
+#[test]
+fn failed_non_fill_write_poison_prevents_retry() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("journal");
+    let mut journal = Journal::open(&path).unwrap();
+    let recorded = journal.record(approved()).unwrap();
+    let before = fs::read_to_string(&path).unwrap();
+    journal.file = File::open(&path).unwrap();
+    assert!(matches!(
+        journal.record_non_fill(&recorded, NonFillOutcome::Rejected),
+        Err(JournalError::Io(_))
+    ));
+    assert!(matches!(
+        journal.record_non_fill(&recorded, NonFillOutcome::Rejected),
+        Err(JournalError::Poisoned)
+    ));
+    assert!(matches!(
+        journal.record(approved()),
+        Err(JournalError::Poisoned)
+    ));
+    assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 1);
+    assert_eq!(fs::read_to_string(&path).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_non_fill_fsync_keeps_position_uncertain() {
+    use std::{os::fd::OwnedFd, os::unix::net::UnixStream};
+    let dir = tempdir().unwrap();
+    let mut journal = Journal::open(dir.path().join("journal")).unwrap();
+    let recorded = journal.record(approved()).unwrap();
+    let (writer, _reader) = UnixStream::pair().unwrap();
+    journal.file = File::from(OwnedFd::from(writer));
+    assert!(matches!(
+        journal.record_non_fill(&recorded, NonFillOutcome::Denied),
+        Err(JournalError::Io(_))
+    ));
+    assert!(matches!(
+        journal.record_non_fill(&recorded, NonFillOutcome::Denied),
+        Err(JournalError::Poisoned)
+    ));
+    assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 1);
+}
+
+#[test]
+fn non_fill_requires_matching_intent_from_this_journal() {
+    let dir = tempdir().unwrap();
+    let mut journal = Journal::open(dir.path().join("journal")).unwrap();
+    let mut other = Journal::open(dir.path().join("other")).unwrap();
+    let absent = other.record(approved()).unwrap();
+    assert!(matches!(
+        journal.record_non_fill(&absent, NonFillOutcome::Denied),
+        Err(JournalError::Corrupt)
+    ));
+    journal.record(Approved(intent(Side::Buy, 2))).unwrap();
+    assert!(matches!(
+        journal.record_non_fill(&absent, NonFillOutcome::Denied),
+        Err(JournalError::Corrupt)
+    ));
+    assert_eq!(journal.net_shares("demo", "SPY").unwrap(), 2);
+}

@@ -49,7 +49,7 @@ Run `.agents/skills/verify-mikiri/drive-h006.sh` for H006 synthetic dev, guarded
 
 Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Drive its offline argument and connection-failure paths with `features/ib-probe.md`. A real connection requires human-run TWS and explicit authorization; the skill does not drive it.
 
-Run `cargo build --locked -p paper-order` and use `features/paper-order.md` for offline argument, config, kill-switch, and market-hours refusals. Real TWS status and orders are human-run; the skill never drives them.
+Run `cargo build --locked -p paper-order` and use `features/paper-order.md` for offline argument, config, kill-switch, and market-hours refusals, plus synthetic cache quote-gating and append-only terminal-outcome regressions. Real TWS status and orders are human-run; the skill never drives them.
 
 Run the offline synthetic recorder recipe in `features/paper-recorder.md`.
 
