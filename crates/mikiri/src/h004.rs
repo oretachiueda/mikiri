@@ -6,7 +6,6 @@ use arrow_array::{ArrayRef, BooleanArray, Float64Array, RecordBatch, StringArray
 use arrow_schema::{Field, Schema};
 use parquet::arrow::ArrowWriter;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, error::Error, fs, path::Path, sync::Arc};
 use time::{Date, Month};
 
@@ -563,11 +562,7 @@ pub fn run(
         .collect::<Result<Vec<_>>>()?;
     let hashes: BTreeMap<_, _> = TICKERS
         .into_iter()
-        .zip(
-            loaded
-                .iter()
-                .map(|(_, raw)| format!("{:x}", Sha256::digest(raw))),
-        )
+        .zip(loaded.iter().map(|(_, raw)| crate::sha256_hex(raw)))
         .collect();
     let bars: [Vec<DailyBar>; 2] = loaded
         .into_iter()

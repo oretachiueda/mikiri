@@ -4,7 +4,6 @@ use crate::{
 };
 use arrow_array::{BooleanArray, StringArray};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, error::Error, fs, path::Path, sync::Arc};
 use time::{Date, Month};
 
@@ -379,7 +378,7 @@ pub fn run(inputs: [&Path; 3], out: &Path) -> Result<String> {
     let (days, mut summary) = compute(&bars)?;
     summary.input_sha256 = TICKERS
         .into_iter()
-        .zip(raw.iter().map(|r| format!("{:x}", Sha256::digest(r))))
+        .zip(raw.iter().map(crate::sha256_hex))
         .collect();
     publish_outputs(out, |tmp| {
         let flat: Vec<_> = bars
