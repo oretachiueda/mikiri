@@ -257,6 +257,22 @@ pub struct TokenManager {
     failed: bool,
 }
 impl TokenManager {
+    #[cfg(test)]
+    pub(crate) fn test_token() -> Self {
+        let now = Instant::now();
+        Self {
+            client: Self::client().expect("client"),
+            base: "http://127.0.0.1".to_owned(),
+            tokens: Tokens {
+                access: "test-token".to_owned(),
+                refresh: "refresh".to_owned(),
+                verifier: "verifier".to_owned(),
+                access_until: now + Duration::from_secs(3600),
+                refresh_until: now + Duration::from_secs(3600),
+            },
+            failed: false,
+        }
+    }
     fn client() -> Result<HttpClient, AuthError> {
         HttpClient::builder()
             .use_system_proxy(false)
