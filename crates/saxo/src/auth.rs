@@ -158,15 +158,21 @@ pub async fn wait_for_code(
             let (mut stream, _) = listener.accept().await.map_err(|_| AuthError::Failed)?;
             let mut buf = [0; 8192];
             let mut used = 0;
-            while used < buf.len() && !buf[..used].windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = stream
-                    .read(&mut buf[used..])
-                    .await
-                    .map_err(|_| AuthError::Failed)?;
-                if n == 0 {
-                    break;
+            let read = tokio::time::timeout(Duration::from_secs(2), async {
+                while used < buf.len() && !buf[..used].windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut buf[used..]).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    used += n;
                 }
-                used += n;
+                Ok::<_, std::io::Error>(())
+            })
+            .await;
+            match read {
+                Err(_) => continue,
+                Ok(Err(_)) => continue,
+                Ok(Ok(())) => (),
             }
             let request = std::str::from_utf8(&buf[..used]).unwrap_or("");
             let mut parts = request.lines().next().unwrap_or("").split_whitespace();
@@ -384,6 +390,25 @@ mod tests {
         let mut response = String::new();
         stream.read_to_string(&mut response).await.expect("read");
         response
+    }
+    #[tokio::test]
+    async fn idle_preconnection_does_not_block_callback() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let waiter = tokio::spawn(wait_for_code(
+            listener,
+            "/cb",
+            "right",
+            Instant::now() + Duration::from_secs(10),
+        ));
+        let _idle = TcpStream::connect(addr).await.expect("preconnect");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(
+            callback(addr, "/cb?state=right&code=secret")
+                .await
+                .starts_with("HTTP/1.1 200")
+        );
+        assert_eq!(waiter.await.expect("task").expect("code").0, "secret");
     }
     #[tokio::test]
     async fn callback_checks_path_state_refusal_and_deadline() {
