@@ -74,7 +74,7 @@ impl SaxoHttp {
         })
     }
     #[cfg(test)]
-    fn test_client(base: &str) -> Self {
+    pub(crate) fn test_client(base: &str) -> Self {
         Self::build(base, 1).expect("client")
     }
     pub async fn get(&self, tokens: &mut TokenManager, path: &str) -> Result<Reply, HttpError> {
@@ -189,64 +189,9 @@ fn allowed(method: &Method, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt},
-        net::TcpListener,
-        sync::mpsc,
-        time::timeout,
-    };
+    use tokio::time::timeout;
 
-    async fn server(
-        response: &'static str,
-        hang: bool,
-    ) -> (
-        String,
-        mpsc::UnboundedReceiver<(Instant, String)>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let base = format!("http://{}", listener.local_addr().expect("addr"));
-        let (tx, rx) = mpsc::unbounded_channel();
-        let task = tokio::spawn(async move {
-            loop {
-                let (mut stream, _) = listener.accept().await.expect("accept");
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let now = Instant::now();
-                    let mut buf = Vec::new();
-                    loop {
-                        let mut part = [0; 4096];
-                        let n = stream.read(&mut part).await.expect("read");
-                        if n == 0 {
-                            return;
-                        }
-                        buf.extend_from_slice(&part[..n]);
-                        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                            let headers = String::from_utf8_lossy(&buf[..end]);
-                            let length = headers
-                                .lines()
-                                .find_map(|line| {
-                                    line.to_ascii_lowercase()
-                                        .strip_prefix("content-length: ")
-                                        .and_then(|v| v.parse::<usize>().ok())
-                                })
-                                .unwrap_or(0);
-                            if buf.len() >= end + 4 + length {
-                                break;
-                            }
-                        }
-                    }
-                    let _ = tx.send((now, String::from_utf8_lossy(&buf).into_owned()));
-                    if hang {
-                        tokio::time::sleep(Duration::from_secs(3)).await;
-                    } else {
-                        let _ = stream.write_all(response.as_bytes()).await;
-                    }
-                });
-            }
-        });
-        (base, rx, task)
-    }
+    use super::test_support::server;
     const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     #[tokio::test]
     async fn rejects_invalid_requests_before_sending() {
@@ -399,5 +344,67 @@ mod tests {
         );
         assert!(SaxoHttp::new(Env::Live).is_err());
         task.abort();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::mpsc,
+        time::Instant,
+    };
+    pub(crate) async fn server(
+        response: &'static str,
+        hang: bool,
+    ) -> (
+        String,
+        mpsc::UnboundedReceiver<(Instant, String)>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let now = Instant::now();
+                    let mut buf = Vec::new();
+                    loop {
+                        let mut part = [0; 4096];
+                        let n = stream.read(&mut part).await.expect("read");
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&part[..n]);
+                        if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let headers = String::from_utf8_lossy(&buf[..end]);
+                            let length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    line.to_ascii_lowercase()
+                                        .strip_prefix("content-length: ")
+                                        .and_then(|v| v.parse::<usize>().ok())
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= end + 4 + length {
+                                break;
+                            }
+                        }
+                    }
+                    let _ = tx.send((now, String::from_utf8_lossy(&buf).into_owned()));
+                    if hang {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    } else {
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    }
+                });
+            }
+        });
+        (base, rx, task)
     }
 }

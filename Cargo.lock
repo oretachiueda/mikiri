@@ -2691,8 +2691,14 @@ dependencies = [
 name = "saxo"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "base64",
  "bytes",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-live",
+ "nautilus-model",
  "nautilus-network",
  "proptest",
  "rand 0.10.3",

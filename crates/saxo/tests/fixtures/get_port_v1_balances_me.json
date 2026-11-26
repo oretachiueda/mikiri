@@ -1,0 +1,72 @@
+{
+ "method": "GET",
+ "path": "/port/v1/balances/me",
+ "status": 200,
+ "response": {
+  "CalculationReliability": "Ok",
+  "CashBalance": 123.45,
+  "CashBlocked": 0.0,
+  "CashBlockedFromWithdrawal": 0.0,
+  "ChangesScheduled": false,
+  "ClosedPositionsCount": 3,
+  "CollateralAvailable": 123.45,
+  "CollateralCreditValue": {
+   "Line": 123.45,
+   "UtilizationPct": 0.0
+  },
+  "CorporateActionUnrealizedAmounts": 0.0,
+  "CostToClosePositions": 0.0,
+  "Currency": "EUR",
+  "CurrencyDecimals": 2,
+  "FinancingAccruals": 0.0,
+  "InitialMargin": {
+   "CollateralAvailable": 123.45,
+   "CollateralCreditValue": {
+    "Line": 123.45,
+    "UtilizationPct": 0.0
+   },
+   "MarginAvailable": 123.45,
+   "MarginCollateralNotAvailable": 0.0,
+   "MarginCollateralNotAvailableIncludingCostToClosePositions": 0.0,
+   "MarginUsedByCurrentPositions": 0.0,
+   "MarginUtilizationPct": 0.0,
+   "NetEquityForMargin": 123.45,
+   "OtherCollateralDeduction": 0.0
+  },
+  "IsPortfolioMarginModelSimple": 123.45,
+  "MarginAndCollateralUtilizationPct": 0.0,
+  "MarginAvailableForTrading": 123.45,
+  "MarginCollateralNotAvailable": 0.0,
+  "MarginCollateralNotAvailableDetail": {
+   "InitialFxHaircut": 0.0,
+   "MaintenanceFxHaircut": 0.0
+  },
+  "MarginCollateralNotAvailableIncludingCostToClosePositions": 0.0,
+  "MarginExposureCoveragePct": 0.0,
+  "MarginNetExposure": 0.0,
+  "MarginUsedByCurrentPositions": 0.0,
+  "MarginUtilizationPct": 0.0,
+  "NetEquityForMargin": 123.45,
+  "NetPositionsCount": 1,
+  "NonMarginPositionsValue": 0.0,
+  "OpenIpoOrdersCount": 0,
+  "OpenPositionsCount": 0,
+  "OptionPremiumsMarketValue": 0.0,
+  "OrdersCount": 0,
+  "OtherCollateral": 0.0,
+  "SettlementValue": 0.0,
+  "SpendingPowerDetail": {},
+  "TotalValue": 123.45,
+  "TransactionsNotBooked": 123.45,
+  "TransactionsNotBookedDetail": {
+   "Commission": 123.45
+  },
+  "TriggerOrdersCount": 0,
+  "UnrealizedMarginClosedProfitLoss": 123.45,
+  "UnrealizedMarginOpenProfitLoss": 0.0,
+  "UnrealizedMarginProfitLoss": 123.45,
+  "UnrealizedPositionsValue": 123.45,
+  "UnrealizedPositionsValueExcludingCostToClosePositions": 123.45
+ },
+ "note": "SIM; all non-zero amounts replaced by 123.45"
+}
