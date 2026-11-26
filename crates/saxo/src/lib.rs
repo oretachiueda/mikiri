@@ -15,3 +15,6 @@ mod reports;
 pub mod request;
 mod tracker;
 mod wire;
+
+#[cfg(test)]
+mod e2e;
