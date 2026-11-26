@@ -2,7 +2,9 @@ use crate::{
     config::SaxoDataClientConfig,
     http::SaxoHttp,
     parse::{self, Quote},
+    providers,
 };
+use anyhow::Context;
 use nautilus_common::{
     clients::DataClient,
     live::{runner::try_get_data_event_sender, sender::EventSender},
@@ -15,6 +17,7 @@ use nautilus_core::time::get_atomic_clock_realtime;
 use nautilus_model::{
     data::{Data, QuoteTick},
     identifiers::{ClientId, InstrumentId, Venue},
+    instruments::InstrumentAny,
     types::{Price, Quantity},
 };
 use std::sync::Arc;
@@ -127,6 +130,43 @@ impl DataClient for SaxoDataClient {
         !self.connected
     }
     async fn connect(&mut self) -> anyhow::Result<()> {
+        if self.connected {
+            return Ok(());
+        }
+        let sender = self
+            .sender
+            .as_ref()
+            .context("data event sender not installed")?;
+        let http = self.http.lock().await;
+        let mut tokens = self.config.tokens.lock().await;
+        let client = http
+            .get(&mut tokens, "/port/v1/clients/me")
+            .await
+            .context("client request failed")?;
+        anyhow::ensure!(
+            client.status == 200,
+            "client request returned HTTP {}",
+            client.status
+        );
+        let instrument = http
+            .get(&mut tokens, "/ref/v1/instruments/details/42/FxSpot")
+            .await
+            .context("instrument request failed")?;
+        anyhow::ensure!(
+            instrument.status == 200,
+            "instrument request returned HTTP {}",
+            instrument.status
+        );
+        let client = std::str::from_utf8(&client.body).context("client response is not UTF-8")?;
+        let instrument =
+            std::str::from_utf8(&instrument.body).context("instrument response is not UTF-8")?;
+        let pair = providers::usd_jpy(client, instrument)
+            .map_err(|e| anyhow::anyhow!("instrument validation failed: {e}"))?;
+        sender
+            .send(DataEvent::Data(Data::Instrument(Box::new(
+                InstrumentAny::CurrencyPair(pair),
+            ))))
+            .map_err(|_| anyhow::anyhow!("instrument event receiver closed"))?;
         self.connected = true;
         Ok(())
     }
@@ -225,8 +265,131 @@ mod tests {
                 .expect("client");
         let (tx, rx) = mpsc::unbounded_channel();
         client.sender = Some(tx.into());
-        client.connect().await.expect("connect");
+        client.connected = true;
         (client, rx, requests, server_task)
+    }
+    async fn instrument_server(
+        instrument_status: u16,
+    ) -> (
+        SaxoDataClient,
+        mpsc::UnboundedReceiver<DataEvent>,
+        JoinHandle<()>,
+    ) {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        let server_task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut bytes = Vec::new();
+                while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let mut part = [0; 4096];
+                    let count = stream.read(&mut part).await.expect("read");
+                    assert!(count > 0, "incomplete request");
+                    bytes.extend_from_slice(&part[..count]);
+                }
+                let request = String::from_utf8_lossy(&bytes);
+                let (status, body) = if request.starts_with("GET /port/v1/clients/me ") {
+                    let mut value: serde_json::Value = serde_json::from_str::<serde_json::Value>(
+                        include_str!("../tests/fixtures/live_client.json"),
+                    )
+                    .expect("fixture")["response"]
+                        .clone();
+                    value["ForceOpenDefaultValue"] = false.into();
+                    (200, value.to_string())
+                } else if request.starts_with("GET /ref/v1/instruments/details/42/FxSpot ") {
+                    let value: serde_json::Value = serde_json::from_str::<serde_json::Value>(
+                        include_str!("../tests/fixtures/live_USDJPY_instrument.json"),
+                    )
+                    .expect("fixture")["response"]
+                        .clone();
+                    (instrument_status, value.to_string())
+                } else {
+                    (404, "{}".to_owned())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} response\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
+            }
+        });
+        let config = SaxoDataClientConfig::new(
+            Env::Sim,
+            Arc::new(Mutex::new(TokenManager::for_tests("token"))),
+        );
+        let mut client =
+            SaxoDataClient::build(ClientId::from("SAXO"), config, SaxoHttp::test_client(&base))
+                .expect("client");
+        let (tx, events) = mpsc::unbounded_channel();
+        client.sender = Some(tx.into());
+        (client, events, server_task)
+    }
+    #[tokio::test]
+    async fn connect_emits_validated_usd_jpy_instrument() {
+        use nautilus_model::instruments::InstrumentAny;
+        let (mut client, mut events, server) = instrument_server(200).await;
+        client.connect().await.expect("connect");
+        assert!(client.is_connected());
+        let event = events.try_recv().expect("instrument event");
+        match event {
+            DataEvent::Data(Data::Instrument(instrument)) => match *instrument {
+                InstrumentAny::CurrencyPair(pair) => {
+                    assert_eq!(pair.id, InstrumentId::from("USD/JPY.SAXO"));
+                    assert_eq!(pair.price_increment, Price::from("0.001"));
+                    assert_eq!(pair.min_quantity, Some(Quantity::from(1000)));
+                    println!(
+                        "instrument={} price_increment={} min_quantity={}",
+                        pair.id,
+                        pair.price_increment,
+                        pair.min_quantity.expect("min quantity")
+                    );
+                }
+                other => panic!("unexpected instrument {other:?}"),
+            },
+            other => panic!("unexpected event {other:?}"),
+        }
+        assert!(events.try_recv().is_err());
+        client.connect().await.expect("idempotent connect");
+        assert!(events.try_recv().is_err());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn connect_rejects_instrument_http_failure_without_event() {
+        let (mut client, mut events, server) = instrument_server(500).await;
+        let error = client.connect().await.expect_err("instrument failure");
+        assert!(
+            error
+                .to_string()
+                .contains("instrument request returned HTTP 500")
+        );
+        println!("error={error} connected={} events=0", client.is_connected());
+        assert!(!client.is_connected());
+        assert!(events.try_recv().is_err());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn connect_fails_closed_if_sender_is_unavailable() {
+        let (mut client, events, server) = instrument_server(200).await;
+        drop(events);
+        let error = client.connect().await.expect_err("closed receiver");
+        assert!(
+            error
+                .to_string()
+                .contains("instrument event receiver closed")
+        );
+        assert!(!client.is_connected());
+        client.sender = None;
+        let error = client.connect().await.expect_err("missing sender");
+        assert!(error.to_string().contains("sender not installed"));
+        assert!(!client.is_connected());
+        server.abort();
     }
     fn subscribe() -> SubscribeQuotes {
         SubscribeQuotes::new(
