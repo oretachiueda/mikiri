@@ -1,0 +1,22 @@
+[package]
+name = "saxo-node"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+saxo = { path = "../saxo" }
+nautilus-live = { version = "=0.68.0", default-features = false, features = ["node"] }
+nautilus-common = { version = "=0.68.0", default-features = false, features = ["live"] }
+nautilus-model = { version = "=0.68.0", default-features = false }
+tokio = { version = "1", features = ["rt", "time", "net", "sync", "macros"] }
+anyhow = "1"
+serde_json = "1"
+nautilus-core = { version = "=0.68.0", default-features = false }
+nautilus-trading = { version = "=0.68.0", default-features = false }
+time = { version = "0.3", features = ["formatting", "macros"] }

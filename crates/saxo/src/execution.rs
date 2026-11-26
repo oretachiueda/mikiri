@@ -172,7 +172,7 @@ impl SaxoExecutionClient {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Saxo order was not sent: {e}");
+                    log::error!("Saxo order was not sent: {e}");
                     for order in &orders {
                         emitter.emit_order_rejected(
                             order,
@@ -407,7 +407,7 @@ impl ExecutionClient for SaxoExecutionClient {
             }
             .await;
             if let Err(error) = result {
-                eprintln!("Saxo account query failed: {error}");
+                log::error!("Saxo account query failed: {error}");
             }
         });
         Ok(())
