@@ -2691,11 +2691,18 @@ dependencies = [
 name = "saxo"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "bytes",
+ "nautilus-network",
  "proptest",
+ "rand 0.10.3",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "time",
+ "tokio",
 ]
 
 [[package]]

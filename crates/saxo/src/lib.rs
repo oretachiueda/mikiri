@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod env;
 mod live_gate;
 pub mod money;
