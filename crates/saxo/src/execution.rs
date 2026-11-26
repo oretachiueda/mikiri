@@ -1,4 +1,5 @@
 use crate::{
+    auth::TokenManager,
     config::SaxoExecutionClientConfig,
     http::{SaxoHttp, WriteOutcome},
     parse, reports,
@@ -189,6 +190,36 @@ impl SaxoExecutionClient {
     }
 }
 
+async fn report_balance(
+    http: &SaxoHttp,
+    tokens: &mut TokenManager,
+    emitter: &ExecutionEventEmitter,
+) -> anyhow::Result<()> {
+    let reply = http
+        .get(tokens, "/port/v1/balances/me")
+        .await
+        .map_err(|e| anyhow::anyhow!("balance request failed: {e}"))?;
+    anyhow::ensure!(
+        reply.status == 200,
+        "balance request failed: HTTP {}",
+        reply.status
+    );
+    let value = serde_json::from_slice(&reply.body)
+        .map_err(|e| anyhow::anyhow!("invalid balance response: {e}"))?;
+    let (balance, margin, info) = reports::balances(&value)
+        .map_err(|e| anyhow::anyhow!("invalid balance response: {e:#}"))?;
+    emitter
+        .try_emit_account_state(
+            vec![balance],
+            vec![margin],
+            true,
+            get_atomic_clock_realtime().get_time_ns(),
+            Some(info),
+        )
+        .map_err(|e| anyhow::anyhow!("account state delivery failed: {e}"))?;
+    Ok(())
+}
+
 #[async_trait::async_trait(?Send)]
 impl ExecutionClient for SaxoExecutionClient {
     fn is_connected(&self) -> bool {
@@ -269,6 +300,7 @@ impl ExecutionClient for SaxoExecutionClient {
             std::str::from_utf8(&instrument.body)?,
         )
         .map_err(|e| anyhow::anyhow!("connection checks failed: {e}"))?;
+        report_balance(&http, &mut tokens, &self.emitter).await?;
         drop(http);
         drop(tokens);
         let task = tokio::runtime::Handle::try_current()?.spawn(tracker::run(
@@ -387,25 +419,8 @@ impl ExecutionClient for SaxoExecutionClient {
         let tokens = self.config.tokens.clone();
         let emitter = self.emitter.clone();
         tokio::runtime::Handle::try_current()?.spawn(async move {
-            let result = async {
-                let reply = http
-                    .lock()
-                    .await
-                    .get(&mut *tokens.lock().await, "/port/v1/balances/me")
-                    .await?;
-                anyhow::ensure!(reply.status == 200, "balance request failed");
-                let value = serde_json::from_slice(&reply.body)?;
-                let (balance, margin, info) = reports::balances(&value)?;
-                emitter.try_emit_account_state(
-                    vec![balance],
-                    vec![margin],
-                    true,
-                    get_atomic_clock_realtime().get_time_ns(),
-                    Some(info),
-                )?;
-                Ok::<_, anyhow::Error>(())
-            }
-            .await;
+            let result =
+                report_balance(&*http.lock().await, &mut *tokens.lock().await, &emitter).await;
             if let Err(error) = result {
                 log::error!("Saxo account query failed: {error}");
             }
@@ -1298,6 +1313,55 @@ mod tests {
         task.abort();
     }
     #[tokio::test]
+    async fn connect_emits_account_and_rejects_failed_balance() {
+        let mut details: serde_json::Value =
+            serde_json::from_str(&fixture(include_str!("../tests/fixtures/live_client.json")))
+                .expect("client");
+        details["ForceOpenDefaultValue"] = false.into();
+        let instrument = fixture(include_str!(
+            "../tests/fixtures/live_USDJPY_instrument.json"
+        ));
+        let accounts = fixture(include_str!(
+            "../tests/fixtures/get_port_v1_accounts_me.json"
+        ));
+        let balance = fixture(include_str!(
+            "../tests/fixtures/get_port_v1_balances_me.json"
+        ));
+        let responses = || {
+            vec![
+                (200, details.to_string()),
+                (200, instrument.clone()),
+                (200, accounts.clone()),
+                (200, balance.clone()),
+            ]
+        };
+        let (mut client, mut events, mut requests, task) = history_setup(responses()).await;
+        client.config.account_key = "TestAccountKey1==".into();
+        client.connect().await.expect("connect");
+        for _ in 0..4 {
+            let _ = request_path(&mut requests).await;
+        }
+        assert!(matches!(
+            event(&mut events).await,
+            ExecutionEvent::Account(_)
+        ));
+        assert!(client.is_connected());
+        client.stop().expect("stop");
+        task.abort();
+        let mut failed = responses();
+        failed[3] = (500, "error".into());
+        let (mut client, mut events, _, task) = history_setup(failed).await;
+        client.config.account_key = "TestAccountKey1==".into();
+        let error = client
+            .connect()
+            .await
+            .expect_err("failed balance must reject connection");
+        assert!(error.to_string().contains("balance"));
+        assert!(!client.is_connected());
+        assert!(events.try_recv().is_err());
+        task.abort();
+    }
+    #[tokio::test]
     async fn connection_starts_and_stops_single_poller() {
         let mut client_json: serde_json::Value =
             serde_json::from_str(&fixture(include_str!("../tests/fixtures/live_client.json")))
@@ -1316,6 +1380,12 @@ mod tests {
             (200, client_json.to_string()),
             (200, instrument),
             (200, accounts),
+            (
+                200,
+                fixture(include_str!(
+                    "../tests/fixtures/get_port_v1_balances_me.json"
+                )),
+            ),
             (200, history),
         ])
         .await;
@@ -1328,9 +1398,13 @@ mod tests {
         .await;
         client.connect().await.expect("connect");
         client.connect().await.expect("connect again");
-        for _ in 0..3 {
+        for _ in 0..4 {
             let _ = request_path(&mut requests).await;
         }
+        assert!(matches!(
+            event(&mut events).await,
+            ExecutionEvent::Account(_)
+        ));
         assert!(request_path(&mut requests).await.contains("OrderId=1012"));
         assert!(matches!(
             event(&mut events).await,
