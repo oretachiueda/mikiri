@@ -1,0 +1,66 @@
+{
+ "method": "GET",
+ "path": "/port/v1/accounts/me",
+ "status": 200,
+ "response": {
+  "Data": [
+   {
+    "AccountSubType": "None",
+    "AccountType": "Normal",
+    "AccountValueProtectionLimit": 0.0,
+    "Active": true,
+    "CanUseCashPositionsAsMarginCollateral": true,
+    "CfdBorrowingCostsActive": false,
+    "CreationDate": "2030-01-01T00:00:00.000000Z",
+    "Currency": "EUR",
+    "CurrencyDecimals": 2,
+    "DirectMarketAccess": false,
+    "FractionalOrderEnabled": false,
+    "FractionalOrderEnabledAssetTypes": [],
+    "IndividualMargining": true,
+    "IsCurrencyConversionAtSettlementTime": true,
+    "IsMarginTradingAllowed": true,
+    "IsShareable": false,
+    "IsTrialAccount": true,
+    "LegalAssetTypes": [
+     "FxSpot",
+     "FxForwards",
+     "ContractFutures",
+     "Stock",
+     "StockOption",
+     "Bond",
+     "FuturesOption",
+     "StockIndexOption",
+     "CfdOnStock",
+     "CfdOnIndex",
+     "StockIndex",
+     "CfdOnEtf",
+     "CfdOnEtc",
+     "CfdOnEtn",
+     "CfdOnFund",
+     "CfdOnRights",
+     "CfdOnCompanyWarrant",
+     "Etf",
+     "Etc",
+     "Etn",
+     "Fund",
+     "FxSwap",
+     "Rights",
+     "IpoOnStock",
+     "CompanyWarrant"
+    ],
+    "ManagementType": "Client",
+    "MarginCalculationMethod": "Default",
+    "MarginLendingEnabled": "None",
+    "PortfolioBasedMarginEnabled": false,
+    "Sharing": [
+     "NoSharing"
+    ],
+    "SupportsAccountValueProtectionLimit": true,
+    "UseCashPositionsAsMarginCollateral": true,
+    "AccountKey": "TestAccountKey1=="
+   }
+  ]
+ },
+ "note": "SIM; AccountKey is synthetic, identifiers removed"
+}

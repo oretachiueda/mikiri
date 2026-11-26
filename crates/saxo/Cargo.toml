@@ -10,6 +10,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+nautilus-live = { version = "=0.68.0", default-features = false }
+nautilus-core = { version = "=0.68.0", default-features = false }
+anyhow = "1"
+async-trait = "0.1"
+nautilus-common = { version = "=0.68.0", default-features = false }
+nautilus-model = { version = "=0.68.0", default-features = false }
 nautilus-network = { version = "=0.68.0", default-features = false }
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "sync", "io-util"] }
 sha2 = "0.11"
@@ -19,7 +25,7 @@ bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-time = { version = "0.3", features = ["parsing"] }
+time = { version = "0.3", features = ["parsing", "formatting"] }
 
 
 [dev-dependencies]

@@ -265,12 +265,16 @@ pub struct TokenManager {
 impl TokenManager {
     #[cfg(test)]
     pub(crate) fn test_token() -> Self {
+        Self::for_tests("test-token")
+    }
+    #[cfg(test)]
+    pub(crate) fn for_tests(access: &str) -> Self {
         let now = Instant::now();
         Self {
             client: Self::client().expect("client"),
             base: "http://127.0.0.1".to_owned(),
             tokens: Tokens {
-                access: "test-token".to_owned(),
+                access: access.to_owned(),
                 refresh: "refresh".to_owned(),
                 verifier: "verifier".to_owned(),
                 access_until: now + Duration::from_secs(3600),
@@ -323,7 +327,14 @@ impl TokenManager {
         })
     }
     pub async fn access(&mut self, now: Instant) -> Result<&str, AuthError> {
-        if self.failed || now >= self.tokens.refresh_until {
+        if self.failed {
+            self.failed = true;
+            return Err(AuthError::LoginNeeded);
+        }
+        if now >= self.tokens.refresh_until {
+            if now < self.tokens.access_until {
+                return Ok(&self.tokens.access);
+            }
             self.failed = true;
             return Err(AuthError::LoginNeeded);
         }
@@ -338,6 +349,7 @@ impl TokenManager {
             });
             match result {
                 Ok(tokens) => self.tokens = tokens,
+                Err(_) if now.max(Instant::now()) < self.tokens.access_until => {}
                 Err(_) => {
                     self.failed = true;
                     return Err(AuthError::LoginNeeded);
@@ -536,7 +548,7 @@ mod tests {
         assert!(requests[1].contains(&format!("code_verifier={verifier}")));
         assert!(!format!("{:?}", manager.tokens).contains("new_access"));
         assert!(!format!("{key:?}").contains(&key.0));
-        let (base, task) = server(vec!["{}"]).await;
+        let (base, task) = server(vec!["{}", NEW]).await;
         let mut manager = TokenManager {
             client: TokenManager::client().expect("client"),
             base,
@@ -544,6 +556,18 @@ mod tests {
                 .expect("tokens"),
             failed: false,
         };
+        assert_eq!(
+            manager.access(Instant::now()).await.expect("old"),
+            "old_access"
+        );
+        assert_eq!(
+            manager.access(Instant::now()).await.expect("new"),
+            "new_access"
+        );
+        assert_eq!(task.await.expect("task").len(), 2);
+        let (base, task) = server(vec!["{}"]).await;
+        manager.base = base;
+        manager.tokens.access_until = Instant::now();
         assert_eq!(
             manager.access(Instant::now()).await,
             Err(AuthError::LoginNeeded)

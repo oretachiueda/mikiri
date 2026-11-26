@@ -79,6 +79,17 @@ pub fn market(
 ) -> Result<Body, RequestError> {
     order(account_key, side, units, external_ref, "Market")
 }
+pub fn stop(
+    account_key: &str,
+    side: Side,
+    units: u64,
+    price: f64,
+    external_ref: &str,
+) -> Result<Body, RequestError> {
+    let mut body = order(account_key, side, units, external_ref, "Stop")?;
+    body["OrderPrice"] = json!(stop_price(side, price)?);
+    Ok(body)
+}
 pub fn open_with_stop(
     account_key: &str,
     side: Side,
