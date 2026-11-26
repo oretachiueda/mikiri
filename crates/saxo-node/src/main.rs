@@ -146,21 +146,32 @@ fn main() {
     }
 }
 async fn run(args: Args, app: AppKey, account: AccountKey) -> Result<(), (i32, String)> {
-    let deadline = Instant::now() + Duration::from_secs(args.timeout);
+    let (login, deadline) = login_before_deadline(
+        login(&args, app),
+        &args.kill,
+        Duration::from_secs(args.timeout),
+    )
+    .await?;
+    check(&args, account, login, deadline).await
+}
+async fn login_before_deadline<T>(
+    login: impl std::future::Future<Output = Result<T, (i32, String)>>,
+    kill_path: &Path,
+    timeout: Duration,
+) -> Result<(T, Instant), (i32, String)> {
     let kill = async {
         loop {
-            if args.kill.exists() {
+            if kill_path.exists() {
                 break;
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     };
-    let login = tokio::select! {
-        result = login(&args, app) => result?,
-        _ = tokio::time::sleep_until(deadline) => return Err((5, "timeout".into())),
+    let token = tokio::select! {
+        result = login => result?,
         _ = kill => return Err((4, "kill file present".into())),
     };
-    check(&args, account, login, deadline).await
+    Ok((token, Instant::now() + timeout))
 }
 async fn login(args: &Args, app: AppKey) -> Result<TokenManager, (i32, String)> {
     let login = async {
@@ -380,5 +391,47 @@ async fn check(
         _ if !connected.load(Ordering::SeqCst) => Err((1, "connection not confirmed".into())),
         _ if currency.is_none() => Err((1, "balance currency unavailable".into())),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn kill_interrupts_login() {
+        get_runtime().block_on(async {
+            let path =
+                std::env::temp_dir().join(format!("saxo-kill-{}", nautilus_core::UUID4::new()));
+            std::fs::write(&path, "").expect("kill file");
+            let result = login_before_deadline(
+                std::future::pending::<Result<(), (i32, String)>>(),
+                &path,
+                Duration::from_secs(1),
+            )
+            .await;
+            std::fs::remove_file(path).expect("remove kill file");
+            assert_eq!(result.expect_err("kill interrupts login").0, 4);
+        });
+    }
+
+    #[test]
+    fn trading_timeout_starts_after_login_finishes() {
+        get_runtime().block_on(async {
+            let path =
+                std::env::temp_dir().join(format!("saxo-kill-{}", nautilus_core::UUID4::new()));
+            let timeout = Duration::from_millis(20);
+            let (login_finished, deadline) = login_before_deadline(
+                async {
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    Ok::<_, (i32, String)>(Instant::now())
+                },
+                &path,
+                timeout,
+            )
+            .await
+            .expect("login succeeds after trading timeout duration");
+            assert!(deadline.duration_since(login_finished) >= timeout);
+        });
     }
 }
