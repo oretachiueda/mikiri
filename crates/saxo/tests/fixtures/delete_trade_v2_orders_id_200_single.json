@@ -1,0 +1,13 @@
+{
+ "method": "DELETE",
+ "path": "/trade/v2/orders/{OrderId}",
+ "status": 200,
+ "request": null,
+ "response": {
+  "Orders": [
+   {
+    "OrderId": "1002"
+   }
+  ]
+ }
+}

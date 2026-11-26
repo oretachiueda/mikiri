@@ -1,0 +1,26 @@
+{
+ "method": "PATCH",
+ "path": "/trade/v2/orders",
+ "status": 404,
+ "request": {
+  "Uic": 42,
+  "AssetType": "FxSpot",
+  "BuySell": "Sell",
+  "Amount": 1000,
+  "OrderType": "Stop",
+  "OrderDuration": {
+   "DurationType": "DayOrder"
+  },
+  "ManualOrder": false,
+  "ExternalReference": "r79-S6-S",
+  "OrderPrice": 146.564,
+  "OrderId": "1029"
+ },
+ "response": {
+  "ErrorInfo": {
+   "ErrorCode": "OrderNotFound",
+   "Message": "リクエストされた注文ＩＤが見つかりませんでした"
+  },
+  "OrderId": "1029"
+ }
+}

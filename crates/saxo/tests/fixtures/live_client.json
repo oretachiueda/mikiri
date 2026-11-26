@@ -1,0 +1,16 @@
+{
+ "status": 200,
+ "response": {
+  "DefaultCurrency": "JPY",
+  "PositionNettingMode": "Intraday",
+  "PositionNettingProfile": "FifoRealTime",
+  "PositionNettingMethod": "FIFO",
+  "AllowedNettingProfiles": [
+   "FifoRealTime"
+  ],
+  "ForceOpenDefaultValue": true,
+  "IsMarginTradingAllowed": true,
+  "MarginCalculationMethod": "Default"
+ },
+ "note": "LIVE, fields picked by the r80 probe"
+}

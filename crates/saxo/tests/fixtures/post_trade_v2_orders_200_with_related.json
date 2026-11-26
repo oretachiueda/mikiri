@@ -1,0 +1,42 @@
+{
+ "method": "POST",
+ "path": "/trade/v2/orders",
+ "status": 200,
+ "request": {
+  "Uic": 42,
+  "AssetType": "FxSpot",
+  "BuySell": "Buy",
+  "Amount": 1000,
+  "OrderType": "Market",
+  "OrderDuration": {
+   "DurationType": "DayOrder"
+  },
+  "ManualOrder": false,
+  "ExternalReference": "r79-S1-E",
+  "Orders": [
+   {
+    "Uic": 42,
+    "AssetType": "FxSpot",
+    "BuySell": "Sell",
+    "Amount": 1000,
+    "OrderType": "Stop",
+    "OrderDuration": {
+     "DurationType": "DayOrder"
+    },
+    "ManualOrder": false,
+    "ExternalReference": "r79-S1-S",
+    "OrderPrice": 146.3
+   }
+  ]
+ },
+ "response": {
+  "ExternalReference": "r79-S1-E",
+  "OrderId": "1001",
+  "Orders": [
+   {
+    "ExternalReference": "r79-S1-S",
+    "OrderId": "1002"
+   }
+  ]
+ }
+}

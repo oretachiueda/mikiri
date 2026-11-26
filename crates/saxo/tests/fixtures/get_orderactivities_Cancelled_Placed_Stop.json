@@ -1,0 +1,52 @@
+{
+ "method": "GET",
+ "path": "/cs/v1/audit/orderactivities",
+ "status": 200,
+ "request": null,
+ "response": {
+  "__count": 2,
+  "__nextPoll": "https://gateway.saxobank.com:443/sim/openapi/cs/v1/audit/orderactivities?orderid=1008&entrytype=All&$skiptoken=900001",
+  "Data": [
+   {
+    "ActivityTime": "2030-01-02T14:19:50.596000Z",
+    "Amount": 1000.0,
+    "AssetType": "FxSpot",
+    "BuySell": "Buy",
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "ExternalReference": "r79-S3-S",
+    "LogId": "1009",
+    "OrderId": "1008",
+    "OrderRelation": "IfDoneSlave",
+    "OrderType": "Stop",
+    "Price": 147.323,
+    "RelatedOrders": [
+     "1010"
+    ],
+    "Status": "Placed",
+    "SubStatus": "Confirmed",
+    "Uic": 42
+   },
+   {
+    "ActivityTime": "2030-01-02T14:20:03.159000Z",
+    "Amount": 1000.0,
+    "AssetType": "FxSpot",
+    "BuySell": "Buy",
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "ExternalReference": "r79-S3-S",
+    "LogId": "1011",
+    "OrderId": "1008",
+    "OrderRelation": "StandAlone",
+    "OrderType": "Stop",
+    "Price": 147.323,
+    "RelatedOrders": [],
+    "Status": "Cancelled",
+    "SubStatus": "Confirmed",
+    "Uic": 42
+   }
+  ]
+ }
+}

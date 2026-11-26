@@ -1,0 +1,18 @@
+{
+ "status": 200,
+ "response": {
+  "Long": {
+   "BuySell": "Buy",
+   "Currency": "JPY",
+   "TotalCost": 0.0,
+   "TotalCostPct": 0.0
+  },
+  "Short": {
+   "BuySell": "Sell",
+   "Currency": "JPY",
+   "TotalCost": 0.0,
+   "TotalCostPct": 0.0
+  }
+ },
+ "note": "LIVE, fields picked by the r80 probe"
+}

@@ -1,0 +1,93 @@
+{
+ "method": "GET",
+ "path": "/port/v1/positions/me",
+ "status": 200,
+ "request": null,
+ "response": {
+  "__count": 2,
+  "Data": [
+   {
+    "NetPositionId": "USDJPY__FxSpot",
+    "PositionBase": {
+     "Amount": -1000.0,
+     "AssetType": "FxSpot",
+     "CanBeClosed": true,
+     "CloseConversionRateSettled": false,
+     "ExecutionTimeOpen": "2030-01-02T14:41:16.780871Z",
+     "ExternalReference": "r79-S7-E",
+     "IsForceOpen": false,
+     "IsMarketOpen": true,
+     "LockedByBackOffice": false,
+     "OpenBondPoolFactor": 1.0,
+     "OpenPrice": 146.622,
+     "OpenPriceIncludingCosts": 146.144,
+     "RelatedOpenOrders": [],
+     "SourceOrderId": "1017",
+     "SpotDate": "2026-11-27",
+     "Status": "Open",
+     "Uic": 42,
+     "ValueDate": "2030-01-04T00:00:00.000000Z"
+    },
+    "PositionId": "1018",
+    "PositionView": {
+     "Ask": 146.64,
+     "Bid": 146.62,
+     "CalculationReliability": "Ok",
+     "CurrentBondPoolFactor": 1.0,
+     "CurrentPrice": 146.64,
+     "CurrentPriceDelayMinutes": 0,
+     "CurrentPriceType": "Ask",
+     "ExposureCurrency": "USD",
+     "InstrumentPriceDayPercentChange": -0.04,
+     "MarketState": "Open",
+     "MarketValueInBaseCurrency": 0.0,
+     "ProfitLossOnTradeIntraday": -18.0,
+     "ProfitLossOnTradeIntradayInBaseCurrency": -0.1,
+     "TradeCostsTotal": -956.0,
+     "TradeCostsTotalInBaseCurrency": -5.49
+    }
+   },
+   {
+    "NetPositionId": "USDJPY__FxSpot",
+    "PositionBase": {
+     "Amount": -1000.0,
+     "AssetType": "FxSpot",
+     "CanBeClosed": true,
+     "CloseConversionRateSettled": false,
+     "ExecutionTimeOpen": "2030-01-02T14:40:58.711831Z",
+     "ExternalReference": "r79-S7-E",
+     "IsForceOpen": false,
+     "IsMarketOpen": true,
+     "LockedByBackOffice": false,
+     "OpenBondPoolFactor": 1.0,
+     "OpenPrice": 146.619,
+     "OpenPriceIncludingCosts": 146.141,
+     "RelatedOpenOrders": [],
+     "SourceOrderId": "1019",
+     "SpotDate": "2026-11-27",
+     "Status": "Open",
+     "Uic": 42,
+     "ValueDate": "2030-01-04T00:00:00.000000Z"
+    },
+    "PositionId": "1020",
+    "PositionView": {
+     "Ask": 146.64,
+     "Bid": 146.62,
+     "CalculationReliability": "Ok",
+     "CurrentBondPoolFactor": 1.0,
+     "CurrentPrice": 146.64,
+     "CurrentPriceDelayMinutes": 0,
+     "CurrentPriceType": "Ask",
+     "ExposureCurrency": "USD",
+     "InstrumentPriceDayPercentChange": -0.04,
+     "MarketState": "Open",
+     "MarketValueInBaseCurrency": 0.0,
+     "ProfitLossOnTradeIntraday": -21.0,
+     "ProfitLossOnTradeIntradayInBaseCurrency": -0.12,
+     "TradeCostsTotal": -956.0,
+     "TradeCostsTotalInBaseCurrency": -5.49
+    }
+   }
+  ]
+ }
+}

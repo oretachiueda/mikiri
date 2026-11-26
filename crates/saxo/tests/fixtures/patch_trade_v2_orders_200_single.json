@@ -1,0 +1,22 @@
+{
+ "method": "PATCH",
+ "path": "/trade/v2/orders",
+ "status": 200,
+ "request": {
+  "Uic": 42,
+  "AssetType": "FxSpot",
+  "BuySell": "Sell",
+  "Amount": 1000,
+  "OrderType": "Limit",
+  "OrderDuration": {
+   "DurationType": "DayOrder"
+  },
+  "ManualOrder": false,
+  "ExternalReference": "r79-S5-L",
+  "OrderPrice": 146.611,
+  "OrderId": "1021"
+ },
+ "response": {
+  "OrderId": "1021"
+ }
+}

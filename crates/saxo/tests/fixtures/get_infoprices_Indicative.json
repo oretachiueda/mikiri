@@ -1,0 +1,27 @@
+{
+ "method": "GET",
+ "path": "/trade/v1/infoprices",
+ "status": 200,
+ "request": null,
+ "response": {
+  "AssetType": "FxSpot",
+  "LastUpdated": "2030-01-02T14:39:19.061000Z",
+  "PriceSource": "SBFX",
+  "Quote": {
+   "Amount": 10000,
+   "Ask": 146.679,
+   "AskSize": 2000000.0,
+   "Bid": 146.659,
+   "BidSize": 1000000.0,
+   "DelayedByMinutes": 0,
+   "ErrorCode": "None",
+   "MarketState": "Open",
+   "Mid": 146.669,
+   "PriceSource": "SBFX",
+   "PriceSourceType": "Firm",
+   "PriceTypeAsk": "Indicative",
+   "PriceTypeBid": "Indicative"
+  },
+  "Uic": 42
+ }
+}

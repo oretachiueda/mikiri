@@ -1,0 +1,117 @@
+{
+ "method": "GET",
+ "path": "/port/v1/orders/me",
+ "status": 200,
+ "request": null,
+ "response": {
+  "__count": 2,
+  "Data": [
+   {
+    "AdviceNote": "",
+    "Amount": 1000.0,
+    "Ask": 146.692,
+    "AssetType": "FxSpot",
+    "Bid": 146.672,
+    "BuySell": "Sell",
+    "CalculationReliability": "Ok",
+    "ClientNote": "",
+    "CurrentPrice": 146.692,
+    "CurrentPriceDelayMinutes": 0,
+    "CurrentPriceType": "Ask",
+    "DistanceToMarket": 0.519,
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "Exchange": {
+     "Description": "Inter Bank",
+     "ExchangeId": "SBFX",
+     "IsOpen": true,
+     "TimeZoneId": "3"
+    },
+    "ExecuteAtTradingSession": "All",
+    "ExternalReference": "r79-S5-S",
+    "IpoSubscriptionFee": 0.0,
+    "IsExtendedHoursEnabled": false,
+    "IsForceOpen": false,
+    "IsMarketOpen": true,
+    "MarketPrice": 146.692,
+    "MarketState": "Open",
+    "NonTradableReason": "None",
+    "OpenOrderType": "Stop",
+    "OrderAmountType": "Quantity",
+    "OrderId": "1012",
+    "OrderRelation": "Oco",
+    "OrderTime": "2030-01-02T14:39:01.551889Z",
+    "Price": 146.173,
+    "RelatedOpenOrders": [
+     {
+      "Amount": 1000.0,
+      "Duration": {
+       "DurationType": "DayOrder"
+      },
+      "OpenOrderType": "Limit",
+      "OrderId": "1013",
+      "OrderPrice": 147.193,
+      "Status": "Working"
+     }
+    ],
+    "Status": "Working",
+    "TradingStatus": "Tradable",
+    "Uic": 42
+   },
+   {
+    "AdviceNote": "",
+    "Amount": 1000.0,
+    "Ask": 146.692,
+    "AssetType": "FxSpot",
+    "Bid": 146.672,
+    "BuySell": "Sell",
+    "CalculationReliability": "Ok",
+    "ClientNote": "",
+    "CurrentPrice": 146.672,
+    "CurrentPriceDelayMinutes": 0,
+    "CurrentPriceType": "Bid",
+    "DistanceToMarket": 0.521,
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "Exchange": {
+     "Description": "Inter Bank",
+     "ExchangeId": "SBFX",
+     "IsOpen": true,
+     "TimeZoneId": "3"
+    },
+    "ExecuteAtTradingSession": "All",
+    "ExternalReference": "r79-S5-L",
+    "IpoSubscriptionFee": 0.0,
+    "IsExtendedHoursEnabled": false,
+    "IsForceOpen": false,
+    "IsMarketOpen": true,
+    "MarketPrice": 146.672,
+    "MarketState": "Open",
+    "NonTradableReason": "None",
+    "OpenOrderType": "Limit",
+    "OrderAmountType": "Quantity",
+    "OrderId": "1013",
+    "OrderRelation": "Oco",
+    "OrderTime": "2030-01-02T14:39:01.551889Z",
+    "Price": 147.193,
+    "RelatedOpenOrders": [
+     {
+      "Amount": 1000.0,
+      "Duration": {
+       "DurationType": "DayOrder"
+      },
+      "OpenOrderType": "Stop",
+      "OrderId": "1012",
+      "OrderPrice": 146.173,
+      "Status": "Working"
+     }
+    ],
+    "Status": "Working",
+    "TradingStatus": "Tradable",
+    "Uic": 42
+   }
+  ]
+ }
+}
