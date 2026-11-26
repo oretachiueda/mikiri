@@ -26,6 +26,7 @@ pub(crate) struct Activities {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct Activity {
     pub activity_time: String,
+    pub log_id: String,
     pub order_id: String,
     pub status: String,
     pub filled_amount: Option<f64>,

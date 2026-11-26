@@ -84,6 +84,13 @@ pub fn fate(json: &str, order_id: &str) -> Fate {
     let Ok(activities) = serde_json::from_str::<wire::Activities>(json) else {
         return Fate::Unknown;
     };
+    if activities
+        .data
+        .iter()
+        .any(|a| a.log_id.is_empty() || !a.log_id.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Fate::Unknown;
+    }
     let mut latest = None;
     for activity in activities
         .data
@@ -96,7 +103,14 @@ pub fn fate(json: &str, order_id: &str) -> Fate {
         ) else {
             return Fate::Unknown;
         };
-        if latest.as_ref().is_none_or(|(t, _)| timestamp > *t) {
+        let log_id = activity.log_id.trim_start_matches('0');
+        if latest
+            .as_ref()
+            .is_none_or(|(t, previous): &(time::OffsetDateTime, wire::Activity)| {
+                let previous_id = previous.log_id.trim_start_matches('0');
+                (timestamp, log_id.len(), log_id) > (*t, previous_id.len(), previous_id)
+            })
+        {
             latest = Some((timestamp, activity));
         }
     }
@@ -212,6 +226,37 @@ mod order_tests {
             assert_eq!(fate(&json, id), expected);
             assert_eq!(fate(&json, "absent"), Fate::Unknown);
         }
+    }
+    #[test]
+    fn same_time_uses_log_id_and_rejects_missing_or_invalid_ids() {
+        let mut json: serde_json::Value = serde_json::from_str(&response(include_str!(
+            "../tests/fixtures/get_orderactivities_FinalFill_Placed_Market.json"
+        )))
+        .expect("fixture");
+        let rows = json["Data"].as_array_mut().expect("data");
+        for row in rows.iter_mut() {
+            row["ActivityTime"] = "2030-01-02T14:19:35Z".into();
+        }
+        let expected = Fate::Done {
+            filled: 1000.0,
+            avg_price: Some(Milli(146821)),
+        };
+        assert_eq!(fate(&json.to_string(), "1001"), expected);
+        json["Data"][0]["LogId"] = "9".into();
+        json["Data"][1]["LogId"] = "0009".into();
+        json["Data"][2]["LogId"] = "10".into();
+        assert_eq!(fate(&json.to_string(), "1001"), expected);
+        json["Data"].as_array_mut().expect("data").reverse();
+        assert_eq!(fate(&json.to_string(), "1001"), expected);
+        json["Data"][0]
+            .as_object_mut()
+            .expect("row")
+            .remove("LogId");
+        assert_eq!(fate(&json.to_string(), "1001"), Fate::Unknown);
+        json["Data"][0]["LogId"] = "not-a-number".into();
+        assert_eq!(fate(&json.to_string(), "1001"), Fate::Unknown);
+        json["Data"][0]["OrderId"] = "other".into();
+        assert_eq!(fate(&json.to_string(), "1001"), Fate::Unknown);
     }
     #[test]
     fn placements_and_errors() {
