@@ -24,6 +24,8 @@ This directory is the maintained source for verifying what a user of Mikiri can 
 
 - [`paper-order.md`](paper-order.md): verify guarded demo-order argument and preconnection refusal paths offline; real connections are human-run.
 
+- [`saxo-node.md`](saxo-node.md): verify SIM-only prelogin refusals offline.
+
 ## Baseline preconditions
 
 - Run every command from the repository root.

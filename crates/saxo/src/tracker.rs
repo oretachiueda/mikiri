@@ -143,11 +143,11 @@ pub(crate) async fn poll(
                     || amount.fract() != 0.0
                     || amount >= u64::MAX as f64
                 {
-                    eprintln!("Saxo history has invalid cumulative filled quantity");
+                    log::warn!("Saxo history has invalid cumulative filled quantity");
                     break;
                 }
                 if amount < tracked.filled as f64 {
-                    eprintln!("Saxo history has decreasing cumulative filled quantity");
+                    log::warn!("Saxo history has decreasing cumulative filled quantity");
                     break;
                 }
             }
@@ -162,7 +162,7 @@ pub(crate) async fn poll(
                 match (price, quantity) {
                     (Some(price), Some(quantity)) => Some((amount as u64, price, quantity)),
                     _ => {
-                        eprintln!("Saxo history lacks a valid execution price or quantity");
+                        log::warn!("Saxo history lacks a valid execution price or quantity");
                         break;
                     }
                 }

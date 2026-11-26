@@ -2695,6 +2695,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "log",
  "nautilus-common",
  "nautilus-core",
  "nautilus-live",
@@ -2707,6 +2708,22 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
+ "tokio",
+]
+
+[[package]]
+name = "saxo-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-live",
+ "nautilus-model",
+ "nautilus-trading",
+ "saxo",
+ "serde_json",
  "time",
  "tokio",
 ]

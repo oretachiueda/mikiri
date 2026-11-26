@@ -136,7 +136,7 @@ impl DataClient for SaxoDataClient {
     fn subscribe_quotes(&mut self, cmd: SubscribeQuotes) -> anyhow::Result<()> {
         for instrument in &cmd.instrument_ids {
             if *instrument != InstrumentId::from("USD/JPY.SAXO") {
-                eprintln!("unsupported quote instrument: {instrument}");
+                log::warn!("unsupported quote instrument: {instrument}");
             }
         }
         if !cmd
