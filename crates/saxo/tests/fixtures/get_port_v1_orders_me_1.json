@@ -1,0 +1,53 @@
+{
+ "method": "GET",
+ "path": "/port/v1/orders/me",
+ "status": 200,
+ "request": null,
+ "response": {
+  "__count": 1,
+  "Data": [
+   {
+    "AdviceNote": "",
+    "Amount": 1000.0,
+    "Ask": 146.82,
+    "AssetType": "FxSpot",
+    "Bid": 146.8,
+    "BuySell": "Sell",
+    "CalculationReliability": "Ok",
+    "ClientNote": "",
+    "CurrentPrice": 146.82,
+    "CurrentPriceDelayMinutes": 0,
+    "CurrentPriceType": "Ask",
+    "DistanceToMarket": 0.52,
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "Exchange": {
+     "Description": "Inter Bank",
+     "ExchangeId": "SBFX",
+     "IsOpen": true,
+     "TimeZoneId": "3"
+    },
+    "ExecuteAtTradingSession": "All",
+    "ExternalReference": "r79-S1-S",
+    "IpoSubscriptionFee": 0.0,
+    "IsExtendedHoursEnabled": false,
+    "IsForceOpen": false,
+    "IsMarketOpen": true,
+    "MarketPrice": 146.82,
+    "MarketState": "Open",
+    "NonTradableReason": "None",
+    "OpenOrderType": "Stop",
+    "OrderAmountType": "Quantity",
+    "OrderId": "1002",
+    "OrderRelation": "StandAlone",
+    "OrderTime": "2030-01-02T14:19:35.811142Z",
+    "Price": 146.3,
+    "RelatedOpenOrders": [],
+    "Status": "Working",
+    "TradingStatus": "Tradable",
+    "Uic": 42
+   }
+  ]
+ }
+}

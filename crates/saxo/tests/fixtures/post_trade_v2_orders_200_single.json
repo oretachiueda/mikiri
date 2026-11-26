@@ -1,0 +1,21 @@
+{
+ "method": "POST",
+ "path": "/trade/v2/orders",
+ "status": 200,
+ "request": {
+  "Uic": 42,
+  "AssetType": "FxSpot",
+  "BuySell": "Sell",
+  "Amount": 1000.0,
+  "OrderType": "Market",
+  "OrderDuration": {
+   "DurationType": "DayOrder"
+  },
+  "ManualOrder": false,
+  "ExternalReference": "r79-CL0"
+ },
+ "response": {
+  "ExternalReference": "r79-CL0",
+  "OrderId": "1007"
+ }
+}

@@ -1,0 +1,102 @@
+{
+ "method": "GET",
+ "path": "/cs/v1/audit/orderactivities",
+ "status": 200,
+ "request": null,
+ "response": {
+  "__count": 4,
+  "__nextPoll": "https://gateway.saxobank.com:443/sim/openapi/cs/v1/audit/orderactivities?orderid=1021&entrytype=All&$skiptoken=900001",
+  "Data": [
+   {
+    "ActivityTime": "2030-01-02T14:41:28.419000Z",
+    "Amount": 1000.0,
+    "AssetType": "FxSpot",
+    "BuySell": "Sell",
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "ExternalReference": "r79-S5-L",
+    "LogId": "1022",
+    "OrderId": "1021",
+    "OrderRelation": "IfDoneSlaveOco",
+    "OrderType": "Limit",
+    "Price": 147.132,
+    "RelatedOrders": [
+     "1023",
+     "1024"
+    ],
+    "Status": "Placed",
+    "SubStatus": "Confirmed",
+    "Uic": 42
+   },
+   {
+    "ActivityTime": "2030-01-02T14:41:37.865000Z",
+    "Amount": 1000.0,
+    "AssetType": "FxSpot",
+    "BuySell": "Sell",
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "ExternalReference": "r79-S5-L",
+    "LogId": "1025",
+    "OrderId": "1021",
+    "OrderRelation": "Oco",
+    "OrderType": "Limit",
+    "Price": 146.611,
+    "RelatedOrders": [
+     "1024"
+    ],
+    "Status": "Changed",
+    "SubStatus": "Confirmed",
+    "Uic": 42
+   },
+   {
+    "ActivityTime": "2030-01-02T14:41:50.424000Z",
+    "Amount": 1000.0,
+    "AssetType": "FxSpot",
+    "BuySell": "Sell",
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "ExternalReference": "r79-S5-L",
+    "LogId": "1026",
+    "OrderId": "1021",
+    "OrderRelation": "Oco",
+    "OrderType": "Limit",
+    "Price": 146.594,
+    "RelatedOrders": [
+     "1024"
+    ],
+    "Status": "Changed",
+    "SubStatus": "Confirmed",
+    "Uic": 42
+   },
+   {
+    "ActivityTime": "2030-01-02T14:41:50.455000Z",
+    "Amount": 1000.0,
+    "AssetType": "FxSpot",
+    "AveragePrice": 146.594,
+    "BuySell": "Sell",
+    "Duration": {
+     "DurationType": "DayOrder"
+    },
+    "ExecutionPrice": 146.594,
+    "ExternalReference": "r79-S5-L",
+    "FillAmount": 1000.0,
+    "FilledAmount": 1000.0,
+    "LogId": "1027",
+    "OrderId": "1021",
+    "OrderRelation": "Oco",
+    "OrderType": "Limit",
+    "PositionId": "1028",
+    "Price": 146.594,
+    "RelatedOrders": [
+     "1024"
+    ],
+    "Status": "FinalFill",
+    "SubStatus": "Confirmed",
+    "Uic": 42
+   }
+  ]
+ }
+}

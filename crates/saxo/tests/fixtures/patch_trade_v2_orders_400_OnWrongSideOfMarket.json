@@ -1,0 +1,26 @@
+{
+ "method": "PATCH",
+ "path": "/trade/v2/orders",
+ "status": 400,
+ "request": {
+  "Uic": 42,
+  "AssetType": "FxSpot",
+  "BuySell": "Sell",
+  "Amount": 1000,
+  "OrderType": "Limit",
+  "OrderDuration": {
+   "DurationType": "DayOrder"
+  },
+  "ManualOrder": false,
+  "ExternalReference": "r79-S5-L",
+  "OrderPrice": 146.651,
+  "OrderId": "1013"
+ },
+ "response": {
+  "ErrorInfo": {
+   "ErrorCode": "OnWrongSideOfMarket",
+   "Message": "逆指値（指値）価格は基準価格を越える必要があります。"
+  },
+  "OrderId": "1013"
+ }
+}

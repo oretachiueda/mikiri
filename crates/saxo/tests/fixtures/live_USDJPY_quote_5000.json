@@ -1,0 +1,18 @@
+{
+ "status": 200,
+ "response": {
+  "Amount": 5000,
+  "Bid": 146.55,
+  "Ask": 146.552,
+  "DelayedByMinutes": 0,
+  "ErrorCode": "None",
+  "MarketState": "Open",
+  "PriceTypeBid": "Tradable",
+  "PriceTypeAsk": "Tradable",
+  "PriceSourceType": "Firm",
+  "spread_sen": 0.2,
+  "IsMarketOpen": true,
+  "LastUpdated": "2030-01-02T14:51:02.634000Z"
+ },
+ "note": "LIVE, fields picked by the r80 probe"
+}

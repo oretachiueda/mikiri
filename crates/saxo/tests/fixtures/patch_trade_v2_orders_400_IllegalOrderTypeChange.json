@@ -1,0 +1,25 @@
+{
+ "method": "PATCH",
+ "path": "/trade/v2/orders",
+ "status": 400,
+ "request": {
+  "Uic": 42,
+  "AssetType": "FxSpot",
+  "BuySell": "Sell",
+  "Amount": 1000,
+  "OrderType": "Market",
+  "OrderDuration": {
+   "DurationType": "DayOrder"
+  },
+  "ManualOrder": false,
+  "ExternalReference": "r79-S1-S",
+  "OrderId": "1002"
+ },
+ "response": {
+  "ErrorInfo": {
+   "ErrorCode": "IllegalOrderTypeChange",
+   "Message": "変更する注文タイプが違法な為"
+  },
+  "OrderId": "1002"
+ }
+}

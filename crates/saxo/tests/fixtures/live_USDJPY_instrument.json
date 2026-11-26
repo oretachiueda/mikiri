@@ -1,0 +1,66 @@
+{
+ "status": 200,
+ "response": {
+  "AssetType": "FxSpot",
+  "IncrementSize": 5000.0,
+  "MinimumTradeSize": 1000.0,
+  "SupportedOrderTypes": [
+   "Stop",
+   "TrailingStop",
+   "StopLimit",
+   "Limit",
+   "Market"
+  ],
+  "IsOcoOrderSupported": false,
+  "TickSize": 0.001,
+  "TickSizeStopOrder": 0.001,
+  "TickSizeLimitOrder": 0.001,
+  "TradingStatus": "Tradable",
+  "IsTradable": true,
+  "NonTradableReason": "None",
+  "SupportedOrderTypeSettings": [
+   {
+    "DurationTypes": [
+     "GoodTillCancel",
+     "DayOrder",
+     "GoodTillDate"
+    ],
+    "OrderType": "Stop"
+   },
+   {
+    "DurationTypes": [
+     "GoodTillCancel",
+     "DayOrder",
+     "GoodTillDate"
+    ],
+    "OrderType": "TrailingStop"
+   },
+   {
+    "DurationTypes": [
+     "GoodTillCancel",
+     "DayOrder",
+     "GoodTillDate"
+    ],
+    "OrderType": "StopLimit"
+   },
+   {
+    "DurationTypes": [
+     "GoodTillCancel",
+     "DayOrder",
+     "ImmediateOrCancel",
+     "GoodTillDate"
+    ],
+    "OrderType": "Limit"
+   },
+   {
+    "DurationTypes": [
+     "DayOrder",
+     "ImmediateOrCancel"
+    ],
+    "OrderType": "Market"
+   }
+  ],
+  "SupportedOrderTriggerPriceTypes": []
+ },
+ "note": "LIVE, fields picked by the r80 probe"
+}
