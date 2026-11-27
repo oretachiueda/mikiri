@@ -85,3 +85,64 @@
 | `test_grok_d_1b_partial_stop_increment_then_complete` | 5b: incremental fill ledger recording. |
 | `test_grok_d_1b_partial_stop_then_1100_close` | `decide::stop_tests::test_grok_d_1b_partial_stop_then_close` |
 | `test_grok_d_1b_overfill_or_missing_price_needs_human` | `decide::stop_tests::test_grok_d_1b_overfill_or_missing_price_needs_human` |
+
+## Journal replay tests
+
+| Python writer test | Rust test |
+| --- | --- |
+| `test_size_under_1000_none` | `replay::tests::test_size_under_minimum_none` |
+| test_size_cap_5&#48;00 | `replay::tests::test_size_cap` |
+| `test_halted_boundary` | `replay::tests::test_halted_boundary` |
+| `test_open_mtm_long_short` | `replay::tests::test_open_mtm_long_short` |
+| `test_sizing_equity` | `replay::tests::test_sizing_equity` |
+| `test_correction_replaces_pnl` | `replay::tests::test_correction_replaces_pnl` |
+
+## Python writer tests
+
+| Python test | Rust test or disposition |
+| --- | --- |
+| test_env_must_be_live | journal::tests::test_env_must_be_live |
+| test_env_required | journal::tests::test_env_required |
+| test_idem_mock_sim_forbidden | journal::tests::test_idem_mock_sim_forbidden |
+| test_fill_requires_order_id_and_hash | journal::tests::test_fill_requires_order_id_and_hash |
+| test_forbidden_hash | journal::tests::test_forbidden_hash |
+| test_non_go&#116;obi_trade_fails | journal::tests::test_non_event_entry_fails |
+| test_format_check_reason_fails | journal::tests::test_format_check_reason_fails |
+| test_duplicate_idem_fill | journal::tests::test_duplicate_idem_fill |
+| test_exit_fill_next_day_fill_time_ok_on_go&#116;obi_tokyo_date | journal::tests::test_exit_fill_next_day |
+| test_close_requires_realized_pnl | journal::tests::test_close_requires_realized_pnl |
+| test_append_only_preserves_prefix | journal::tests::test_append_only_preserves_prefix |
+| test_size_under_1000_none | replay::tests::test_size_under_minimum_none |
+| test_size_cap_5&#48;00 | replay::tests::test_size_cap |
+| test_halted_boundary | replay::tests::test_halted_boundary |
+| test_open_mtm_long_short | replay::tests::test_open_mtm_long_short |
+| test_sizing_equity | replay::tests::test_sizing_equity |
+| test_prod_v1_jsonl_absent | 5c: production paths are supplied by the operator. |
+| test_period_and_reference_dates_jan31 | Judgment remains in Python; outside journal replay. |
+| test_add_months_clamps_february | Judgment remains in Python; outside journal replay. |
+| test_weekend_fill_attribution | Judgment remains in Python; outside journal replay. |
+| test_start_and_not_ended | Judgment remains in Python; outside journal replay. |
+| test_cost_pending_hold | Judgment remains in Python; outside journal replay. |
+| test_swap_pending_not_hold | Judgment remains in Python; outside journal replay. |
+| test_swap_does_not_change_sr | Judgment remains in Python; outside journal replay. |
+| test_open_position_hold | Judgment remains in Python; outside journal replay. |
+| test_correction_replaces_pnl | replay::tests::test_correction_replaces_pnl |
+| test_zero_fill_business_days | Judgment remains in Python; outside journal replay. |
+| test_k_not_one_rejected | Judgment remains in Python; outside journal replay. |
+| test_z_hand_expected | Judgment remains in Python; outside journal replay. |
+| test_is_go&#116;obi_sample | 5c: event dates come from the plan. |
+| test_grok_d_4_correction_target_must_exist_and_match_key | journal::tests::test_grok_d_4_correction_target_must_exist_and_match_key |
+| test_grok_b1_01_uncovered_year_judge_ok | Judgment remains in Python; outside journal replay. |
+| test_grok_b1_02_period_end_non_business_pnl | Judgment remains in Python; outside journal replay. |
+| test_grok_b1_03_pre_start_checks_all_rows | Judgment remains in Python; outside journal replay. |
+| test_grok_b1_04_ref_pending_outside_ref_window | Judgment remains in Python; outside journal replay. |
+| test_grok_b1_05_empty_order_id | journal::tests::test_fill_requires_order_id_and_hash |
+| test_grok_b1_06_duplicate_scheduled_same_key | journal::tests::test_grok_b1_06_duplicate_scheduled_same_key |
+| test_grok_b1_07_format_and_skip_hash_and_declare_fill | journal::tests::test_format_check_reason_fails and test_declare_fill_and_skipped_forbidden_hash |
+| test_grok_b1_08_append_under_lock_single_fill | journal::tests::test_grok_b1_08_append_under_lock_single_fill |
+| test_grok_b1_09_judgment_capital_non_positive_hold | Judgment remains in Python; outside journal replay. |
+| test_grok_b1_10_main_stats_zero_variance_hold | Judgment remains in Python; outside journal replay. |
+| test_grok_b1_11_zero_fill_nov26 | Judgment remains in Python; outside journal replay. |
+| test_grok_b1_extra_halt_idem_rejected | journal::tests::test_halt_key_rejected |
+| test_grok_c_1_duplicate_fill_different_actions | journal::tests::test_grok_c_1_duplicate_fill_different_actions |
+| test_grok_c_2_nonpositive_reference_capital | Judgment remains in Python; outside journal replay. |
