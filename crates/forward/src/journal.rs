@@ -181,12 +181,42 @@ fn valid_hash(s: &str) -> bool {
 /// let _permit = Permit { intent: todo!() };
 /// ```
 #[must_use]
+#[derive(Debug)]
 pub struct Permit {
     intent: Row,
+    max_units: i64,
+    lot_size: i64,
 }
 impl Permit {
-    pub fn into_intent(self) -> Row {
-        self.intent
+    pub fn leg(&self) -> &str {
+        &self.intent.leg
+    }
+    pub fn authorize(
+        mut self,
+        key: &str,
+        leg: &str,
+        side: Side,
+        units: i64,
+    ) -> Result<Row, String> {
+        if self.intent.idem_key != key
+            || self.intent.leg != leg
+            || self.intent.side != Some(side)
+            || units <= 0
+        {
+            return Err("Human: order does not match permit".into());
+        }
+        if self.intent.action == Action::Entry {
+            if units > self.max_units
+                || units % self.lot_size != 0
+                || self.intent.units.is_some_and(|u| u != units)
+            {
+                return Err("Human: entry size exceeds permit".into());
+            }
+        } else if self.intent.units != Some(units) {
+            return Err("Human: exit size does not match permit".into());
+        }
+        self.intent.units = Some(units);
+        Ok(self.intent)
     }
 }
 
@@ -329,6 +359,13 @@ impl<'a> Journal<'a> {
         }
         Ok(rows)
     }
+    pub fn read_or_empty(&self) -> Result<Vec<Row>, String> {
+        match self.path.try_exists() {
+            Ok(false) => Ok(Vec::new()),
+            Ok(true) => self.read(),
+            Err(e) => Err(e.to_string()),
+        }
+    }
     pub fn read(&self) -> Result<Vec<Row>, String> {
         let mut file = File::open(&self.path).map_err(|e| e.to_string())?;
         file.lock().map_err(|e| e.to_string())?;
@@ -337,13 +374,14 @@ impl<'a> Journal<'a> {
     pub fn append(&self, row: &Row) -> Result<(), String> {
         self.append_checked(row, false)
     }
-    /// Persists a scheduled declaration carrying the order key, side and units.
+    /// Persists a scheduled declaration carrying the order key and side.
     /// A later fill can then use its trade action without duplicating the declaration.
     pub fn begin(&self, intent: Row) -> Result<Permit, String> {
         if intent.status != Status::Scheduled
             || !matches!(intent.action, Action::Entry | Action::Exit)
             || intent.correction_of.is_some()
-            || intent.units.is_none_or(|v| v <= 0)
+            || intent.units.is_some_and(|v| v <= 0)
+            || (intent.action == Action::Exit && intent.units.is_none())
             || intent.side.is_none()
         {
             return Err("invalid order intent".into());
@@ -357,6 +395,19 @@ impl<'a> Journal<'a> {
             return Err("invalid order intent".into());
         }
         if intent.action == Action::Entry {
+            let leg = self
+                .plan
+                .legs
+                .iter()
+                .find(|leg| leg.name == intent.leg)
+                .ok_or("invalid leg")?;
+            let expected_side = match leg.direction {
+                crate::plan::Direction::Buy => Side::Buy,
+                crate::plan::Direction::Sell => Side::Sell,
+            };
+            if intent.side != Some(expected_side) {
+                return Err("entry direction does not match plan".into());
+            }
             let date = Date::parse(&intent.tokyo_date, &Iso8601::DATE)
                 .map_err(|_| "invalid event date")?;
             if !self.plan.event_dates.contains(&date) {
@@ -379,10 +430,20 @@ impl<'a> Journal<'a> {
         if !valid_key {
             return Err("intent key does not match action".into());
         }
+        if self.plan.sizing.lot_size <= 0
+            || self.plan.sizing.unit_cap <= 0
+            || self.plan.sizing.absolute_cap <= 0
+        {
+            return Err("invalid sizing limits".into());
+        }
         let mut recorded = intent.clone();
         recorded.action = Action::Declare;
         self.append_checked(&recorded, true)?;
-        Ok(Permit { intent })
+        Ok(Permit {
+            intent,
+            max_units: self.plan.sizing.unit_cap.min(self.plan.sizing.absolute_cap),
+            lot_size: self.plan.sizing.lot_size,
+        })
     }
     fn append_checked(&self, row: &Row, new_key: bool) -> Result<(), String> {
         let (mut file, _created) = match OpenOptions::new()
@@ -714,7 +775,13 @@ mod tests {
         let j = journal(&path, &p);
         let first = intent();
         let permit = j.begin(first.clone()).expect("permit");
-        assert_eq!(permit.into_intent().idem_key, first.idem_key);
+        assert_eq!(
+            permit
+                .authorize(&first.idem_key, &first.leg, Side::Buy, 10)
+                .expect("authorize")
+                .idem_key,
+            first.idem_key
+        );
         let persisted = j.read().expect("read");
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].action, Action::Declare);
@@ -882,5 +949,40 @@ mod tests {
         let path = PathBuf::from(path);
         assert!(!path.exists(), "sample already exists");
         full_day(&path, false, Environment::Live);
+    }
+    #[test]
+    fn empty_entry_size_is_bound_at_authorization() {
+        let p = plan();
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("journal");
+        let j = journal(&path, &p);
+        let mut entry = intent();
+        entry.units = None;
+        let key = entry.idem_key.clone();
+        let permit = j.begin(entry).expect("begin");
+        let rows = j.read().expect("validate");
+        assert_eq!(rows[0].units, None);
+        let authorized = permit.authorize(&key, "A", Side::Buy, 20).expect("size");
+        assert_eq!(authorized.units, Some(20));
+    }
+    #[test]
+    fn predeclared_entry_rejects_excess_or_unaligned_size() {
+        let p = plan();
+        let dir = tempfile::tempdir().expect("dir");
+        for (i, units) in [110, 11, 0].into_iter().enumerate() {
+            let path = dir.path().join(i.to_string());
+            let j = journal(&path, &p);
+            let mut entry = intent();
+            entry.units = None;
+            let key = entry.idem_key.clone();
+            let permit = j.begin(entry).expect("begin");
+            assert!(
+                permit
+                    .authorize(&key, "A", Side::Buy, units)
+                    .expect_err("size")
+                    .contains("Human")
+            );
+            assert_eq!(j.read().expect("read").len(), 1);
+        }
     }
 }

@@ -9,6 +9,9 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 nautilus-live = { version = "=0.68.0", default-features = false }
 nautilus-core = { version = "=0.68.0", default-features = false }

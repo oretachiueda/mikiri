@@ -49,8 +49,8 @@ impl fmt::Debug for WriteOutcome {
     }
 }
 
-#[cfg(test)]
-pub(crate) static TEST_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+#[cfg(any(test, feature = "test-support"))]
+pub static TEST_BASE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub struct SaxoHttp {
     client: HttpClient,
@@ -60,7 +60,7 @@ pub struct SaxoHttp {
 impl SaxoHttp {
     pub fn new(env: Env) -> Result<Self, LiveDisabled> {
         let base = env.base_url()?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(test_base) = TEST_BASE.lock().map_err(|_| LiveDisabled)?.as_deref() {
             return Self::build(test_base, 20).map_err(|_| LiveDisabled);
         }

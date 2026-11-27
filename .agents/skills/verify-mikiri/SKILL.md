@@ -52,6 +52,7 @@ Run `cargo build --locked -p ib-probe` for the separate read-only IB binary. Dri
 Run `cargo build --locked -p paper-order` and use `features/paper-order.md` for offline argument, config, kill-switch, and market-hours refusals. Real TWS status and orders are human-run; the skill never drives them.
 
 Run `cargo build --locked -p saxo-node` and use `features/saxo-node.md` for offline argument, key-file, redirect, and kill-switch refusals. Real SIM login and orders are run by the human or the managing agent; the skill never drives them.
+- `saxo-node forward` covers offline SIM refusals, journal locking, and fake-broker execution and recovery.
 
 Run the offline synthetic recorder recipe in `features/paper-recorder.md`.
 

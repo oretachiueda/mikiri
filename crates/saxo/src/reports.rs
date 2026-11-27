@@ -1,7 +1,9 @@
 use anyhow::{Context, ensure};
 use nautilus_core::{Params, UnixNanos};
 use nautilus_model::{
-    enums::{LiquiditySide, OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce},
+    enums::{
+        LiquiditySide, OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce, TriggerType,
+    },
     identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
@@ -162,6 +164,7 @@ pub(crate) fn open_orders(
             None,
         );
         if kind == OrderType::StopMarket {
+            report.trigger_type = Some(TriggerType::Default);
             report.trigger_price = Some(Price::new_checked(number(row, "Price")?, 3)?);
         } else if kind == OrderType::Limit {
             report.price = Some(Price::new_checked(number(row, "Price")?, 3)?);
@@ -242,11 +245,73 @@ pub(crate) fn history_order(
     now: UnixNanos,
 ) -> anyhow::Result<Option<OrderStatusReport>> {
     use nautilus_model::orders::Order;
-    let mut activity: Vec<_> = rows(value)?
+    let activity: Vec<_> = rows(value)?
         .iter()
         .filter(|r| r["OrderId"].as_str() == Some(id))
         .collect();
-    activity.sort_by_key(|r| r["ActivityTime"].as_str().unwrap_or("").to_owned());
+    history_report(
+        activity,
+        (order.order_side(), order.order_type(), order.quantity()),
+        account,
+        now,
+    )
+}
+
+pub(crate) fn recovery_orders(
+    value: &Value,
+    references: &std::collections::HashSet<ClientOrderId>,
+    account: AccountId,
+    now: UnixNanos,
+) -> anyhow::Result<Vec<OrderStatusReport>> {
+    let mut orders = std::collections::HashMap::<_, Vec<_>>::new();
+    for row in rows(value)? {
+        if supported(row) && client(row).is_some_and(|id| references.contains(&id)) {
+            orders.entry(text(row, "OrderId")?).or_default().push(row);
+        }
+    }
+    let mut reports = Vec::new();
+    let mut used = std::collections::HashSet::new();
+    for (_, activity) in orders {
+        let first = activity[0];
+        let id = client(first).context("missing external reference")?;
+        ensure!(
+            used.insert(id),
+            "multiple history orders for one external reference"
+        );
+        let kind = match text(first, "OrderType")? {
+            "Market" => OrderType::Market,
+            "Stop" => OrderType::StopMarket,
+            _ => anyhow::bail!("unsupported recovery order type"),
+        };
+        if let Some(report) = history_report(
+            activity,
+            (side(first)?, kind, qty(number(first, "Amount")?)?),
+            account,
+            now,
+        )? {
+            reports.push(report);
+        }
+    }
+    Ok(reports)
+}
+
+fn history_report(
+    mut activity: Vec<&Value>,
+    (order_side, kind, quantity): (OrderSide, OrderType, Quantity),
+    account: AccountId,
+    now: UnixNanos,
+) -> anyhow::Result<Option<OrderStatusReport>> {
+    activity.sort_by_key(|r| {
+        let log = r["LogId"]
+            .as_str()
+            .unwrap_or_default()
+            .trim_start_matches('0');
+        (
+            r["ActivityTime"].as_str().unwrap_or_default(),
+            log.len(),
+            log,
+        )
+    });
     let Some(last) = activity.last() else {
         return Ok(None);
     };
@@ -271,21 +336,28 @@ pub(crate) fn history_order(
         .unwrap_or(0.0);
     let mut report = OrderStatusReport::new(
         account,
-        order.instrument_id(),
+        instrument(),
         client(last),
-        VenueOrderId::from(id),
-        Some(order.order_side()),
-        order.order_type(),
-        order.time_in_force(),
+        VenueOrderId::from(text(last, "OrderId")?),
+        Some(order_side),
+        kind,
+        TimeInForce::Day,
         status,
-        order.quantity(),
+        quantity,
         qty(filled)?,
         accepted,
         last_ts,
         now,
         None,
     );
-    if order.order_type() == OrderType::StopMarket {
+    report.avg_px = activity
+        .iter()
+        .rev()
+        .find_map(|r| r["AveragePrice"].as_f64())
+        .map(|p| Price::new_checked(p, 3).map(|price| price.as_decimal()))
+        .transpose()?;
+    if kind == OrderType::StopMarket {
+        report.trigger_type = Some(TriggerType::Default);
         report.trigger_price = activity
             .iter()
             .rev()

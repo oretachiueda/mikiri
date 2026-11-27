@@ -1,3 +1,4 @@
+mod forward_strategy;
 mod strategy;
 use nautilus_common::{enums::Environment, live::get_runtime, logging::logger::LoggerConfig};
 use nautilus_live::{config::RoutingConfig, node::LiveNode};
@@ -49,6 +50,7 @@ impl AccountKey {
 enum Command {
     Check,
     SimRoundtrip,
+    Forward,
 }
 struct Args {
     command: Command,
@@ -58,16 +60,28 @@ struct Args {
     kill: PathBuf,
     redirect: String,
     timeout: u64,
+    plan: Option<PathBuf>,
+    journal: Option<PathBuf>,
+    halt: Option<PathBuf>,
+    until: Option<time::Time>,
+    dry_run: bool,
 }
 fn parse() -> anyhow::Result<Args> {
     let mut it = std::env::args().skip(1);
     let command = match it.next().as_deref() {
         Some("check") => Command::Check,
         Some("sim-roundtrip") => Command::SimRoundtrip,
-        _ => anyhow::bail!("expected check or sim-roundtrip"),
+        Some("forward") => Command::Forward,
+        _ => anyhow::bail!("expected check, sim-roundtrip or forward"),
     };
     let mut opts = HashMap::new();
+    let mut dry_run = false;
     while let Some(opt) = it.next() {
+        if opt == "--dry-run" {
+            anyhow::ensure!(!dry_run, "duplicate option");
+            dry_run = true;
+            continue;
+        }
         anyhow::ensure!(
             matches!(
                 opt.as_str(),
@@ -78,6 +92,10 @@ fn parse() -> anyhow::Result<Args> {
                     | "--redirect"
                     | "--timeout-secs"
                     | "--out"
+                    | "--plan"
+                    | "--journal"
+                    | "--halt-file"
+                    | "--until"
             ),
             "unknown option"
         );
@@ -101,6 +119,28 @@ fn parse() -> anyhow::Result<Args> {
         .get("--timeout-secs")
         .map_or(Ok(180), |s| s.parse::<u64>())?;
     anyhow::ensure!((1..=600).contains(&timeout), "invalid timeout");
+    anyhow::ensure!(
+        command == Command::Forward
+            || (!dry_run
+                && !opts.contains_key("--plan")
+                && !opts.contains_key("--journal")
+                && !opts.contains_key("--halt-file")
+                && !opts.contains_key("--until")),
+        "forward options require forward command"
+    );
+    if command == Command::Forward {
+        required("--plan")?;
+        required("--journal")?;
+    }
+    let until = opts
+        .get("--until")
+        .map(|s| {
+            time::Time::parse(
+                s,
+                &time::macros::format_description!("[hour]:[minute]:[second]"),
+            )
+        })
+        .transpose()?;
     Ok(Args {
         command,
         out: opts
@@ -111,6 +151,11 @@ fn parse() -> anyhow::Result<Args> {
         kill: required("--kill-file")?.into(),
         redirect,
         timeout,
+        plan: opts.get("--plan").map(PathBuf::from),
+        journal: opts.get("--journal").map(PathBuf::from),
+        halt: opts.get("--halt-file").map(PathBuf::from),
+        until,
+        dry_run,
     })
 }
 fn main() {
@@ -121,10 +166,26 @@ fn main() {
             std::process::exit(2);
         }
     };
-    if args.kill.exists() {
+    if args.kill.try_exists().unwrap_or(true) {
         eprintln!("kill file present");
         std::process::exit(4);
     }
+    if args.command == Command::Forward
+        && let Err(e) = forward_strategy::preflight(&args)
+    {
+        eprintln!("forward preflight failed: {e:#}");
+        std::process::exit(2);
+    }
+    let _journal_lock = match (args.command == Command::Forward && !args.dry_run)
+        .then(|| forward_strategy::lock_journal(&args))
+        .transpose()
+    {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("forward: {e:#}");
+            std::process::exit(6);
+        }
+    };
     let app = match AppKey::from_file(&args.app) {
         Ok(v) => v,
         Err(_) => {
@@ -216,6 +277,11 @@ async fn check(
 ) -> Result<(), (i32, String)> {
     let tokens = Arc::new(Mutex::new(login));
     let routing = RoutingConfig::builder().default(true).build();
+    let mut execution = SaxoExecutionClientConfig::new(Env::Sim, account.0, tokens.clone());
+    if args.command == Command::Forward {
+        execution.recovery_references = forward_strategy::recovery_references(args)
+            .map_err(|e| (6, format!("forward recovery setup: {e:#}")))?;
+    }
     let mut node = LiveNode::builder(TraderId::from("SAXO-CHECK"), Environment::Live)
         .and_then(|b| {
             b.with_name("SAXO-CHECK".to_owned())
@@ -230,11 +296,7 @@ async fn check(
                 .add_exec_client_with_routing(
                     None,
                     Box::new(SaxoExecutionClientFactory),
-                    Box::new(SaxoExecutionClientConfig::new(
-                        Env::Sim,
-                        account.0,
-                        tokens.clone(),
-                    )),
+                    Box::new(execution),
                     routing,
                 )?
                 .build()
@@ -256,12 +318,19 @@ async fn check(
         node.add_strategy(strategy)
             .map_err(|e| (1, format!("strategy registration failed: {e:#}")))?;
     }
+    if args.command == Command::Forward {
+        let forward = forward_strategy::Forward::new(args, handle.clone(), strategy_result.clone())
+            .map_err(|e| (1, format!("forward setup failed: {e:#}")))?;
+        node.add_strategy(forward)
+            .map_err(|e| (1, format!("forward registration failed: {e:#}")))?;
+    }
     let reason = Arc::new(AtomicI32::new(0));
     let monitor_reason = reason.clone();
     let connected = Arc::new(AtomicBool::new(false));
     let monitor_connected = connected.clone();
     let kill = args.kill.clone();
     let is_check = args.command == Command::Check;
+    let is_forward = args.command == Command::Forward;
     let balance = Arc::new(Mutex::new(None::<String>));
     let balance_result = balance.clone();
     let balance_connected = connected.clone();
@@ -320,6 +389,17 @@ async fn check(
     monitor.abort();
     balance_task.abort();
     let currency = balance.lock().await.clone();
+    if is_forward {
+        result.map_err(|e| (6, format!("Human: forward node failed: {e:#}")))?;
+        let code = *strategy_result
+            .lock()
+            .map_err(|_| (1, "forward result unavailable".to_owned()))?;
+        return match code {
+            Some(0) => Ok(()),
+            Some(code) => Err((code, "forward stopped".into())),
+            None => Err((1, "forward stopped without final state".into())),
+        };
+    }
     if args.command == Command::SimRoundtrip {
         use std::io::Write;
         let code = *strategy_result
@@ -435,3 +515,7 @@ mod deadline_tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/forward/mod.rs"]
+mod forward_execution_tests;

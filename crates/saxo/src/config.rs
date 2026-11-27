@@ -1,10 +1,12 @@
 use crate::{auth::TokenManager, env::Env};
 use nautilus_common::factories::ClientConfig;
-use std::{any::Any, fmt, sync::Arc};
+use nautilus_model::identifiers::ClientOrderId;
+use std::{any::Any, collections::HashSet, fmt, sync::Arc};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct SaxoExecutionClientConfig {
+    pub recovery_references: HashSet<ClientOrderId>,
     pub env: Env,
     pub account_key: String,
     pub poll_interval: std::time::Duration,
@@ -13,6 +15,7 @@ pub struct SaxoExecutionClientConfig {
 impl SaxoExecutionClientConfig {
     pub fn new(env: Env, account_key: String, tokens: Arc<Mutex<TokenManager>>) -> Self {
         Self {
+            recovery_references: HashSet::new(),
             env,
             account_key,
             tokens,
@@ -69,6 +72,7 @@ mod tests {
     fn debug_hides_secrets() {
         let tokens = Arc::new(Mutex::new(TokenManager::test_token()));
         let execution = SaxoExecutionClientConfig {
+            recovery_references: HashSet::new(),
             env: Env::Sim,
             account_key: "secret-key".into(),
             poll_interval: std::time::Duration::from_secs(1),

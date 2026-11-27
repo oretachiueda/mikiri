@@ -18,7 +18,9 @@ use nautilus_live::{ExecutionClientCore, execution::emitter::ExecutionEventEmitt
 use nautilus_model::{
     accounts::AccountAny,
     enums::{ContingencyType, OmsType, OrderSide, OrderType, TimeInForce},
-    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, Venue},
+    identifiers::{
+        AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, Venue, VenueOrderId,
+    },
     orders::{Order, OrderAny},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, MarginBalance},
@@ -330,6 +332,29 @@ impl ExecutionClient for SaxoExecutionClient {
         }
         let value = self.get_json("/port/v1/orders/me").await?;
         let mut reports = reports::open_orders(&value, self.core.account_id, cmd.ts_init)?;
+        if !cmd.open_only && !self.config.recovery_references.is_empty() {
+            let history = self
+                .get_json("/cs/v1/audit/orderactivities?EntryType=All")
+                .await?;
+            for report in reports::recovery_orders(
+                &history,
+                &self.config.recovery_references,
+                self.core.account_id,
+                cmd.ts_init,
+            )? {
+                if let Some(open) = reports
+                    .iter_mut()
+                    .find(|r| r.venue_order_id == report.venue_order_id)
+                {
+                    open.filled_qty = report.filled_qty;
+                    if report.filled_qty.as_f64() > 0.0 {
+                        open.order_status = nautilus_model::enums::OrderStatus::PartiallyFilled;
+                    }
+                } else {
+                    reports.push(report);
+                }
+            }
+        }
         let tracked: Vec<_> = self
             .tracked
             .lock()
@@ -413,6 +438,34 @@ impl ExecutionClient for SaxoExecutionClient {
             self.core.account_id,
             cmd.ts_init,
         )?])
+    }
+    fn register_external_order(
+        &self,
+        client_order_id: ClientOrderId,
+        venue_order_id: VenueOrderId,
+        _: InstrumentId,
+        _: StrategyId,
+        _: UnixNanos,
+    ) {
+        let Ok(order) = self.core.get_order(&client_order_id) else {
+            return;
+        };
+        if !order.is_open() {
+            return;
+        }
+        let tracked = self.tracked.clone();
+        let ids = self.order_ids.clone();
+        let id = venue_order_id.to_string();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                tracked
+                    .lock()
+                    .await
+                    .entry(client_order_id)
+                    .or_insert_with(|| Tracked::recovered(order, id.clone()));
+                ids.lock().await.insert(client_order_id, id);
+            });
+        }
     }
     fn query_account(&self, _cmd: QueryAccount) -> anyhow::Result<()> {
         let http = self.http.clone();
@@ -629,6 +682,7 @@ mod tests {
         );
         core.set_connected();
         let config = SaxoExecutionClientConfig {
+            recovery_references: Default::default(),
             env: Env::Sim,
             account_key: "test-key".into(),
             poll_interval: Duration::from_secs(1),
@@ -1071,6 +1125,7 @@ mod tests {
             cache,
         );
         let config = SaxoExecutionClientConfig {
+            recovery_references: Default::default(),
             env: Env::Sim,
             account_key: "test-key".into(),
             tokens: Arc::new(Mutex::new(TokenManager::for_tests("token"))),

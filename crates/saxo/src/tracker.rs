@@ -24,6 +24,7 @@ pub(crate) struct Tracked {
     seen: HashSet<String>,
     accepted: bool,
     filled: u64,
+    recovered_at: Option<UnixNanos>,
 }
 impl Tracked {
     pub fn new(order: OrderAny, venue_id: Option<String>) -> Self {
@@ -33,7 +34,17 @@ impl Tracked {
             seen: HashSet::new(),
             accepted: false,
             filled: 0,
+            recovered_at: None,
         }
+    }
+    pub fn recovered(order: OrderAny, venue_id: String) -> Self {
+        let filled = order.filled_qty().as_f64() as u64;
+        let recovered_at = order.last_event().ts_event();
+        let mut tracked = Self::new(order, Some(venue_id));
+        tracked.accepted = true;
+        tracked.filled = filled;
+        tracked.recovered_at = Some(recovered_at);
+        tracked
     }
 }
 pub(crate) type Orders = Arc<Mutex<HashMap<ClientOrderId, Tracked>>>;
@@ -45,8 +56,19 @@ pub(crate) async fn poll(
     ids: &Arc<Mutex<HashMap<ClientOrderId, String>>>,
     emitter: &ExecutionEventEmitter,
 ) {
-    let keys: Vec<_> = orders.lock().await.keys().copied().collect();
-    for key in keys {
+    let mut keys: Vec<_> = orders
+        .lock()
+        .await
+        .values()
+        .map(|t| {
+            (
+                t.order.parent_order_id().is_some(),
+                t.order.client_order_id(),
+            )
+        })
+        .collect();
+    keys.sort_unstable();
+    for (_, key) in keys {
         let id = match orders.lock().await.get(&key) {
             Some(o) => o.venue_id.clone(),
             None => continue,
@@ -135,6 +157,10 @@ pub(crate) async fn poll(
             else {
                 continue;
             };
+            if tracked.recovered_at.is_some_and(|ts| time <= ts) {
+                tracked.seen.insert(log.to_owned());
+                continue;
+            }
             let venue = VenueOrderId::from(id.as_str());
             let amount = row.get("FilledAmount").and_then(|v| v.as_f64());
             if let Some(amount) = amount {

@@ -267,8 +267,8 @@ impl TokenManager {
     pub(crate) fn test_token() -> Self {
         Self::for_tests("test-token")
     }
-    #[cfg(test)]
-    pub(crate) fn for_tests(access: &str) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_tests(access: &str) -> Self {
         let now = Instant::now();
         Self {
             client: Self::client().expect("client"),
