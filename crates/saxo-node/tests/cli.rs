@@ -158,3 +158,161 @@ fn login_error_includes_cause_without_secrets() {
     assert!(!stderr.contains("account-key"));
     assert!(!stderr.contains("http://"));
 }
+
+const FORWARD_PLAN: &str = r#"
+instrument_id = "SYNTH.SAXO"
+price_increment_milli = 5
+utc_offset_seconds = 3600
+base_capital_milli = 1000000
+halt_threshold_milli = 100
+expires = "2099-01-01"
+event_dates = ["2098-01-01"]
+[blackout]
+start = "01:00:00"
+end = "02:00:00"
+[sizing]
+unit_cap = 100
+absolute_cap = 200
+multiplier = 2
+lot_size = 10
+minimum_units = 10
+[[legs]]
+name = "A"
+direction = "buy"
+max_spread_milli = 9
+[legs.entry]
+start = "03:10:00"
+end = "03:20:00"
+[legs.exit]
+start = "04:10:00"
+end = "04:20:00"
+[legs.stop]
+enabled = false
+width_ppm = 0
+[legs.order_limits]
+entry = 1
+stop = 0
+exit = 1
+cancel = 1
+"#;
+impl Fixture {
+    fn forward_command(&self) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_saxo-node"));
+        c.args([
+            "forward",
+            "--env",
+            "sim",
+            "--dry-run",
+            "--redirect",
+            "http://localhost:34567/cb",
+            "--plan",
+        ])
+        .arg(self.dir.join("plan"))
+        .arg("--journal")
+        .arg(self.dir.join("journal"))
+        .arg("--app-key-file")
+        .arg(self.dir.join("absent-app"))
+        .arg("--account-key-file")
+        .arg(self.dir.join("absent-account"))
+        .arg("--kill-file")
+        .arg(self.dir.join("kill"));
+        c
+    }
+    fn forward_output(&self) -> (i32, String) {
+        let output = self.forward_command().output().expect("run");
+        (
+            output.status.code().expect("exit"),
+            String::from_utf8(output.stderr).expect("utf8"),
+        )
+    }
+}
+#[test]
+fn forward_rejects_live_and_preflights_without_dry_run() {
+    let output = Command::new(env!("CARGO_BIN_EXE_saxo-node"))
+        .args(["forward", "--env", "live"])
+        .output()
+        .expect("run");
+    assert_eq!(output.status.code(), Some(2));
+    let output = Command::new(env!("CARGO_BIN_EXE_saxo-node"))
+        .args([
+            "forward",
+            "--env",
+            "sim",
+            "--redirect",
+            "http://localhost:34567/cb",
+            "--plan",
+            "missing",
+            "--journal",
+            "missing",
+            "--app-key-file",
+            "missing",
+            "--account-key-file",
+            "missing",
+            "--kill-file",
+            "missing",
+        ])
+        .output()
+        .expect("run");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("forward preflight failed"));
+}
+#[test]
+fn forward_rejects_bad_plan_before_reading_credentials() {
+    let f = Fixture::new();
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 2);
+    assert!(err.contains("forward preflight failed"));
+    f.write("plan", FORWARD_PLAN, 0o644);
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 2);
+    assert!(err.contains("permissions"));
+    f.write(
+        "plan",
+        &FORWARD_PLAN.replace("2099-01-01", "1969-01-01"),
+        0o600,
+    );
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 2);
+    assert!(err.contains("expired plan"));
+    f.write("plan", &format!("{FORWARD_PLAN}\nunknown = true\n"), 0o600);
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown field"));
+}
+#[test]
+fn forward_rejects_kill_before_preflight_and_login() {
+    let f = Fixture::new();
+    f.write("kill", "", 0o600);
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 4);
+    assert!(err.contains("kill file present"));
+}
+#[test]
+fn forward_rejects_corrupt_and_mixed_environment_journals_before_login() {
+    let f = Fixture::new();
+    f.write("plan", FORWARD_PLAN, 0o600);
+    f.write("journal", "{broken}\n", 0o600);
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 2);
+    assert!(err.contains("journal:"));
+    let other = serde_json::json!({"version":1,"env":"LIVE","event_id":"A-20980101","leg":"A","tokyo_date":"2098-01-01","action":"declare","idem_key":"A-20980101-ENTRY-LIVE","status":"scheduled","recorded_at":"2098-01-01T03:15:00+01:00"});
+    f.write("journal", &format!("{other}\n"), 0o600);
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 2);
+    assert!(err.contains("environment"));
+    f.write("journal", "", 0o600);
+    let (code, err) = f.forward_output();
+    assert_eq!(code, 2);
+    assert!(err.contains("invalid app key file"));
+}
+#[test]
+fn forward_rejects_invalid_until() {
+    let f = Fixture::new();
+    f.write("plan", FORWARD_PLAN, 0o600);
+    let output = f
+        .forward_command()
+        .args(["--until", "25:90:00"])
+        .output()
+        .expect("run");
+    assert_eq!(output.status.code(), Some(2));
+}

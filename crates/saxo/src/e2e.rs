@@ -4,6 +4,7 @@ use crate::{
     env::Env,
     factories::{SaxoDataClientFactory, SaxoExecutionClientFactory},
     http::TEST_BASE,
+    test_support::{fixture, server},
 };
 use nautilus_common::{
     actor::DataActor, enums::Environment, live::get_runtime, logging::logger::LoggerConfig,
@@ -25,15 +26,11 @@ use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    sync::Mutex,
-};
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
 struct TestStrategy {
@@ -134,120 +131,6 @@ nautilus_strategy!(TestStrategy, {
         self.handle.stop();
     }
 });
-fn fixture(s: &str) -> serde_json::Value {
-    serde_json::from_str::<serde_json::Value>(s).expect("fixture")["response"].clone()
-}
-async fn server() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let base = format!("http://{}", listener.local_addr().expect("addr"));
-    let posts = Arc::new(AtomicUsize::new(0));
-    let count = posts.clone();
-    let task = tokio::spawn(async move {
-        loop {
-            let (mut stream, _) = listener.accept().await.expect("accept");
-            let mut buf = Vec::new();
-            loop {
-                let mut chunk = [0; 4096];
-                let n = stream.read(&mut chunk).await.expect("read");
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let header = String::from_utf8_lossy(&buf[..end]);
-                    let length = header
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length: ")
-                                .and_then(|x| x.parse::<usize>().ok())
-                        })
-                        .unwrap_or(0);
-                    if buf.len() >= end + 4 + length {
-                        break;
-                    }
-                }
-            }
-            let req = String::from_utf8_lossy(&buf);
-            let line = req.lines().next().unwrap_or("");
-            let body = if line.starts_with("GET /port/v1/clients/me ") {
-                let mut v = fixture(include_str!("../tests/fixtures/live_client.json"));
-                v["ForceOpenDefaultValue"] = false.into();
-                v
-            } else if line.starts_with("GET /ref/v1/instruments/details/42/FxSpot ") {
-                fixture(include_str!(
-                    "../tests/fixtures/live_USDJPY_instrument.json"
-                ))
-            } else if line.starts_with("GET /port/v1/accounts/me ") {
-                fixture(include_str!(
-                    "../tests/fixtures/get_port_v1_accounts_me.json"
-                ))
-            } else if line.starts_with("GET /port/v1/balances/me ") {
-                fixture(include_str!(
-                    "../tests/fixtures/get_port_v1_balances_me.json"
-                ))
-            } else if line.starts_with("GET /port/v1/positions/me ") {
-                fixture(include_str!(
-                    "../tests/fixtures/get_port_v1_positions_me_0.json"
-                ))
-            } else if line.starts_with("GET /port/v1/orders/me ") {
-                fixture(include_str!(
-                    "../tests/fixtures/get_port_v1_orders_me_0.json"
-                ))
-            } else if line.starts_with("GET /trade/v1/infoprices?") {
-                fixture(include_str!(
-                    "../tests/fixtures/get_infoprices_Tradable.json"
-                ))
-            } else if line.starts_with("POST /trade/v2/orders ") {
-                let body_start = buf
-                    .windows(4)
-                    .position(|w| w == b"\r\n\r\n")
-                    .expect("headers")
-                    + 4;
-                let request: serde_json::Value =
-                    serde_json::from_slice(&buf[body_start..]).expect("order body");
-                assert_eq!(request["BuySell"], "Buy");
-                assert_eq!(request["Amount"], 1000);
-                assert_eq!(request["OrderType"], "Market");
-                assert_eq!(request["Orders"].as_array().expect("stop list").len(), 1);
-                assert_eq!(request["Orders"][0]["OrderType"], "Stop");
-                count.fetch_add(1, Ordering::SeqCst);
-                fixture(include_str!(
-                    "../tests/fixtures/post_trade_v2_orders_200_with_related.json"
-                ))
-            } else if line.starts_with("GET /cs/v1/audit/orderactivities?") {
-                if count.load(Ordering::SeqCst) == 0 {
-                    serde_json::json!({"Data":[]})
-                } else {
-                    let mut market = fixture(include_str!(
-                        "../tests/fixtures/get_orderactivities_FinalFill_Placed_Market.json"
-                    ));
-                    let mut stop = fixture(include_str!(
-                        "../tests/fixtures/get_orderactivities_Placed_Stop.json"
-                    ));
-                    stop["Data"][0]["OrderId"] = "1002".into();
-                    market["Data"].as_array_mut().expect("history").extend(
-                        stop["Data"]
-                            .as_array()
-                            .expect("stop history")
-                            .iter()
-                            .cloned(),
-                    );
-                    market
-                }
-            } else {
-                panic!("unexpected request: {line}")
-            };
-            let body = body.to_string();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream.write_all(response.as_bytes()).await.expect("write");
-        }
-    });
-    (base, posts, task)
-}
 #[test]
 fn node_submits_and_books_fill_using_fake_saxo() {
     get_runtime().block_on(async {

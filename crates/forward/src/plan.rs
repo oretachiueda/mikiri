@@ -181,7 +181,7 @@ impl Plan {
             if limits.entry == 0
                 || limits.exit == 0
                 || limits.cancel == 0
-                || (l.stop.enabled && limits.stop == 0)
+                || (l.stop.enabled && (limits.stop == 0 || limits.exit > 2))
                 || (!l.stop.enabled && limits.stop != 0)
             {
                 return Err("invalid order limits".into());
@@ -377,6 +377,12 @@ cancel = 1
                 VALID.replace("minimum_units = 10", "minimum_units = 11"),
                 0o600,
                 "inconsistent sizing",
+            ),
+            (
+                "protective exit cap",
+                VALID.replace("exit = 1", "exit = 3"),
+                0o600,
+                "invalid order limits",
             ),
             (
                 "stop limit",

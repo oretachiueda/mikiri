@@ -20,6 +20,20 @@ pub struct Replay {
     attempted: HashSet<(String, Date)>,
 }
 impl Replay {
+    pub fn empty(env: Environment) -> Self {
+        Self {
+            orders: Vec::new(),
+            cancellations: Vec::new(),
+            positions: Vec::new(),
+            realized_milli: 0,
+            halted: false,
+            killed: false,
+            used_keys: HashSet::new(),
+            needs_broker_stop: Vec::new(),
+            env,
+            attempted: HashSet::new(),
+        }
+    }
     pub fn input<'a>(
         &'a self,
         now: OffsetDateTime,
@@ -103,22 +117,33 @@ fn replay(
             }
             _ => {}
         }
-        let recorded_intent = r.action == Action::Declare
-            && r.status == Status::Scheduled
-            && r.units.is_some()
-            && r.side.is_some();
+        let recorded_intent =
+            r.action == Action::Declare && r.status == Status::Scheduled && r.side.is_some();
+        let reserved_stop = recorded_intent
+            && plan.legs.iter().any(|l| l.name == r.leg && l.stop.enabled)
+            && r.idem_key.ends_with(&format!("-EXIT-{}-1", env.name()));
         let resolved_intent = recorded_intent
-            && rows
-                .iter()
-                .any(|other| other.idem_key == r.idem_key && fill(other.status));
+            && rows.iter().any(|other| {
+                other.idem_key == r.idem_key
+                    && matches!(
+                        other.action,
+                        Action::Entry | Action::Exit | Action::StopExit | Action::ManualClose
+                    )
+            });
         if !resolved_intent
+            && !reserved_stop
+            && r.action != Action::StopExit
             && (matches!(
                 r.action,
                 Action::Entry | Action::Exit | Action::StopExit | Action::ManualClose
             ) || recorded_intent)
             && matches!(
                 r.status,
-                Status::Scheduled | Status::Filled | Status::Partial
+                Status::Scheduled
+                    | Status::Filled
+                    | Status::Partial
+                    | Status::Skipped
+                    | Status::Missed
             )
         {
             let entry_intent =
@@ -131,10 +156,15 @@ fn replay(
             if entry_intent {
                 output.attempted.insert((r.leg.clone(), date));
             }
-            let state = if r.status == Status::Filled {
-                OrderState::Done
-            } else {
-                OrderState::Unknown
+            let state = match (r.status, r.reason.as_deref()) {
+                (Status::Skipped, Some("rejected")) | (Status::Missed, Some("restart"))
+                    if kind == Kind::Exit =>
+                {
+                    OrderState::Refused
+                }
+                (Status::Skipped, Some("rejected")) => OrderState::Refused,
+                (Status::Scheduled | Status::Partial, None) => OrderState::Unknown,
+                _ => OrderState::Done,
             };
             output.orders.push(Order {
                 leg: r.leg.clone(),
@@ -150,7 +180,18 @@ fn replay(
                 leg: r.leg.clone(),
                 event_date: date,
                 order_key: r.idem_key.clone(),
-                state: OrderState::Unknown,
+                state: if rows.iter().any(|other| {
+                    other.idem_key == r.idem_key
+                        && matches!(
+                            other.action,
+                            Action::Entry | Action::Exit | Action::StopExit
+                        )
+                        && other.reason.as_deref() == Some("canceled")
+                }) {
+                    OrderState::Done
+                } else {
+                    OrderState::Unknown
+                },
             });
         }
         if !fill(r.status) {
@@ -440,5 +481,37 @@ mod tests {
         assert_eq!(restored.orders.len(), 1);
         assert_eq!(restored.orders[0].state, OrderState::Done);
         assert_eq!(restored.positions[0].units, 10);
+    }
+    #[test]
+    fn reserved_stop_is_not_replayed_as_pending_market_order() {
+        let p = read(VALID, 0o600).expect("plan");
+        let dir = tempfile::tempdir().expect("dir");
+        let j = Journal::new(
+            dir.path().join("journal"),
+            Environment::Sim,
+            &p,
+            HashSet::new(),
+        );
+        let mut entry = row();
+        entry.units = Some(10);
+        j.append(&entry).expect("entry fill");
+        let mut stop = row();
+        stop.action = Action::Exit;
+        stop.status = Status::Scheduled;
+        stop.units = Some(10);
+        stop.side = Some(Side::Sell);
+        stop.order_id = None;
+        stop.fill_time = None;
+        stop.fill_price = None;
+        stop.source_sha256 = None;
+        stop.idem_key = format!("{}-EXIT-SIM-1", stop.event_id);
+        let key = stop.idem_key.clone();
+        let _permit = j.begin(stop).expect("stop declaration");
+        let replay = j
+            .replay(&HashMap::from([("A".into(), 12_345)]))
+            .expect("replay");
+        assert!(replay.used_keys.contains(&key));
+        assert_eq!(replay.needs_broker_stop, vec!["A"]);
+        assert!(replay.orders.iter().all(|o| o.key != key));
     }
 }

@@ -18,3 +18,6 @@ mod wire;
 
 #[cfg(test)]
 mod e2e;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

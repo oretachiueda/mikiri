@@ -2730,6 +2730,7 @@ name = "saxo-node"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "forward",
  "nautilus-common",
  "nautilus-core",
  "nautilus-live",
@@ -2737,6 +2738,8 @@ dependencies = [
  "nautilus-trading",
  "saxo",
  "serde_json",
+ "sha2",
+ "tempfile",
  "time",
  "tokio",
 ]

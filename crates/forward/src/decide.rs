@@ -122,7 +122,7 @@ fn direction_opposite(d: &Direction) -> Direction {
         Direction::Sell => Direction::Buy,
     }
 }
-fn equity(plan: &Plan, input: &Input<'_>) -> Option<i128> {
+pub fn equity_milli(plan: &Plan, input: &Input<'_>) -> Option<i128> {
     let mut result =
         i128::from(plan.base_capital_milli).checked_add(i128::from(input.realized_milli))?;
     for p in input.positions {
@@ -305,7 +305,7 @@ fn stop_decision(
         leg,
         stop.event_date,
         Kind::Exit,
-        relevant.len() + 1,
+        relevant.len() + 2,
         input.env,
     );
     if input.orders.iter().any(|o| o.key == key) {
@@ -421,11 +421,14 @@ pub fn next(plan: &Plan, input: &Input<'_>) -> Action {
         if now.time() >= plan.blackout.start && now.time() < plan.blackout.end {
             return Action::Wait;
         }
-        let count = input
+        let relevant = input
             .orders
             .iter()
-            .filter(|o| o.leg == leg.name && o.event_date == p.event_date && o.kind == Kind::Exit)
-            .count();
+            .filter(|o| o.leg == leg.name && o.event_date == p.event_date && o.kind == Kind::Exit);
+        if relevant.clone().any(|o| o.state == OrderState::Refused) {
+            return Action::Human;
+        }
+        let count = relevant.count();
         if count >= leg.order_limits.exit.min(3) as usize {
             return Action::Human;
         }
@@ -464,7 +467,7 @@ pub fn next(plan: &Plan, input: &Input<'_>) -> Action {
     if input.halted {
         return Action::Halted;
     }
-    let Some(capital) = equity(plan, input) else {
+    let Some(capital) = equity_milli(plan, input) else {
         return Action::Human;
     };
     if capital <= i128::from(plan.halt_threshold_milli) {
@@ -874,7 +877,7 @@ mod stop_tests {
     fn setup() -> (Plan, OffsetDateTime) {
         let text = VALID
             .replace("direction = \"buy\"", "direction = \"sell\"")
-            .replace("exit = 1", "exit = 3");
+            .replace("exit = 1", "exit = 2");
         (
             read(&text, 0o600).expect("plan"),
             OffsetDateTime::parse("2098-01-01T03:15:00+01:00", &Rfc3339).expect("time"),
@@ -995,15 +998,9 @@ mod stop_tests {
         let c = [cancel(now, OrderState::Done)];
         i.stop = Some(&st2);
         i.cancellations = &c;
-        assert!(matches!(
-            next(&plan, &i),
-            Action::Submit {
-                kind: Kind::Exit,
-                units: 100,
-                direction: Direction::Buy,
-                ..
-            }
-        ));
+        assert!(
+            matches!(next(&plan, &i), Action::Submit { key, kind: Kind::Exit, units: 100, direction: Direction::Buy, .. } if key.ends_with("EXIT-SIM-2"))
+        );
     }
     #[test]
     fn test_t3_stop_filled_before_close_no_buy() {
@@ -1392,7 +1389,7 @@ mod properties {
     fn setup() -> (Plan, OffsetDateTime) {
         let text = VALID
             .replace("direction = \"buy\"", "direction = \"sell\"")
-            .replace("exit = 1", "exit = 3");
+            .replace("exit = 1", "exit = 2");
         (
             read(&text, 0o600).expect("plan"),
             OffsetDateTime::parse("2098-01-01T03:15:00+01:00", &Rfc3339).expect("time"),

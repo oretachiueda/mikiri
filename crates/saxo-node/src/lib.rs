@@ -1,3 +1,10 @@
+pub mod forward_control;
+pub mod forward_dispatch;
+pub mod forward_events;
+pub mod forward_fills;
+pub mod forward_orders;
+pub mod forward_restart;
+pub mod forward_state;
 /// The state machine represents prices in millionths and trigger prices in thousandths.
 pub mod roundtrip {
     pub const QUANTITY: u64 = 1_000;
