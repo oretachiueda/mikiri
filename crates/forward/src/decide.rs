@@ -1,6 +1,9 @@
 use time::{Date, OffsetDateTime};
 
-use crate::plan::{Direction, Leg, Plan};
+use crate::{
+    journal::Environment,
+    plan::{Direction, Leg, Plan},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderState {
@@ -67,6 +70,7 @@ pub struct StopSnapshot {
 #[derive(Debug)]
 pub struct Input<'a> {
     pub now: OffsetDateTime,
+    pub env: Environment,
     pub leg: &'a str,
     pub quote: Option<Quote>,
     pub positions: &'a [Position],
@@ -130,9 +134,19 @@ fn equity(plan: &Plan, input: &Input<'_>) -> Option<i128> {
     }
     Some(result)
 }
-fn key(leg: &Leg, date: Date, kind: Kind, sequence: usize) -> String {
-    format!("{}-{date}-{kind:?}-{sequence}", leg.name)
+fn key(leg: &Leg, date: Date, kind: Kind, sequence: usize, env: Environment) -> String {
+    let day = format!(
+        "{:04}{:02}{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    );
+    match kind {
+        Kind::Entry => format!("{}-{day}-ENTRY-{}", leg.name, env.name()),
+        Kind::Exit => format!("{}-{day}-EXIT-{}-{sequence}", leg.name, env.name()),
+    }
 }
+
 fn stop_price(price: i64, leg: &Leg, increment: i64) -> Option<i64> {
     if price <= 0 || increment <= 0 {
         return None;
@@ -284,10 +298,16 @@ fn stop_decision(
     if relevant.iter().any(|o| o.state == OrderState::Refused) {
         return Action::Human;
     }
-    if relevant.len() >= leg.order_limits.exit as usize {
+    if relevant.len() >= leg.order_limits.exit.min(3) as usize {
         return Action::Human;
     }
-    let key = key(leg, stop.event_date, Kind::Exit, relevant.len() + 1);
+    let key = key(
+        leg,
+        stop.event_date,
+        Kind::Exit,
+        relevant.len() + 1,
+        input.env,
+    );
     if input.orders.iter().any(|o| o.key == key) {
         return Action::Human;
     }
@@ -406,10 +426,10 @@ pub fn next(plan: &Plan, input: &Input<'_>) -> Action {
             .iter()
             .filter(|o| o.leg == leg.name && o.event_date == p.event_date && o.kind == Kind::Exit)
             .count();
-        if count >= leg.order_limits.exit as usize {
+        if count >= leg.order_limits.exit.min(3) as usize {
             return Action::Human;
         }
-        let key = key(leg, p.event_date, Kind::Exit, count + 1);
+        let key = key(leg, p.event_date, Kind::Exit, count + 1, input.env);
         if input.orders.iter().any(|o| o.key == key) {
             return Action::Human;
         }
@@ -487,7 +507,7 @@ pub fn next(plan: &Plan, input: &Input<'_>) -> Action {
     if count >= leg.order_limits.entry as usize {
         return Action::Human;
     }
-    let key = key(leg, now.date(), Kind::Entry, count + 1);
+    let key = key(leg, now.date(), Kind::Entry, count + 1, input.env);
     if input.orders.iter().any(|o| o.key == key) {
         return Action::Human;
     }
@@ -541,6 +561,7 @@ mod tests {
     fn input(now: OffsetDateTime) -> Input<'static> {
         Input {
             now,
+            env: Environment::Sim,
             leg: "A",
             quote: Some(Quote {
                 bid_milli: 1000,
@@ -727,7 +748,7 @@ mod tests {
             now,
             Kind::Exit,
             OrderState::Done,
-            "A-2098-01-01-Exit-1",
+            "A-20980101-EXIT-SIM-1",
             20,
         )];
         let mut i = input(now);
@@ -735,7 +756,7 @@ mod tests {
         i.positions = &positions;
         i.orders = &orders;
         assert!(
-            matches!(next(&plan, &i), Action::Submit {key, kind: Kind::Exit, units: 30, ..} if key.ends_with("Exit-2"))
+            matches!(next(&plan, &i), Action::Submit {key, kind: Kind::Exit, units: 30, ..} if key.ends_with("EXIT-SIM-2"))
         );
     }
     #[test]
@@ -862,6 +883,7 @@ mod stop_tests {
     fn input(now: OffsetDateTime) -> Input<'static> {
         Input {
             now,
+            env: Environment::Sim,
             leg: "A",
             quote: Some(Quote {
                 bid_milli: 1001,
@@ -1384,6 +1406,7 @@ mod properties {
     ) -> Input<'a> {
         Input {
             now,
+            env: Environment::Sim,
             leg: "A",
             quote: Some(Quote {
                 bid_milli: 1000,
